@@ -8,16 +8,28 @@ use App::SimpiCI::Store;
 use Getopt::Long qw( GetOptions );
 use JSON::MaybeXS;
 use Path::Tiny qw( path );
+use Pod::Usage qw( pod2usage );
 
-my ($config_path, $once);
-GetOptions('config=s' => \$config_path, 'once' => \$once) or exit 64;
-die "Usage: simpicid --config simpici.json [--once]\n" unless $config_path;
+my ($config_path, $once, $runner_script, $help, $man);
+GetOptions(
+  'config=s' => \$config_path,
+  'once'     => \$once,
+  'runner=s' => \$runner_script,
+  'help|h'   => \$help,
+  'man'      => \$man
+) or pod2usage(-exitval => 64, -verbose => 1);
+pod2usage(-exitval => 0, -verbose => 1) if $help;
+pod2usage(-exitval => 0, -verbose => 2) if $man;
+pod2usage(-exitval => 64, -verbose => 1,
+  -message => 'A configuration file is required.') unless $config_path;
 
 my $config = JSON::MaybeXS->new->decode(path($config_path)->slurp_utf8);
 my $store = App::SimpiCI::Store->new(root => path($config->{root} // './var'));
 my $runner = App::SimpiCI::Runner->new(
   store   => $store,
-  timeout => $config->{timeout} // 3600
+  timeout => $config->{timeout} // 3600,
+  (($runner_script // $config->{runner})
+    ? (runner_script => path($runner_script // $config->{runner})) : ())
 );
 
 while (1) {
@@ -32,3 +44,60 @@ while (1) {
   sleep($config->{interval} // 60);
 }
 
+=head1 NAME
+
+simpicid - poll Git repositories and execute SimpiCI runs
+
+=head1 SYNOPSIS
+
+  simpicid --config simpici.json
+  simpicid --config simpici.json --once
+  simpicid --config simpici.json --runner /opt/simpici/action/run.sh
+  simpicid --help
+
+=head1 DESCRIPTION
+
+C<simpicid> polls configured Git refs, normalizes changes into events,
+deduplicates them by repository, ref, and commit, checks out exact revisions,
+and invokes the same phased container executor used by hosted GitHub and
+Forgejo workflows.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<--config> I<file>
+
+Required JSON configuration. See C<etc/simpici.example.json>.
+
+=item B<--once>
+
+Poll every configured repository once and exit instead of sleeping.
+
+=item B<--runner> I<file>
+
+Override the executor path from the configuration or the default
+C<action/run.sh> resolved from the current directory.
+
+=item B<--help>, B<-h>
+
+Print concise help.
+
+=item B<--man>
+
+Print the complete manual.
+
+=back
+
+=head1 CONFIGURATION
+
+The top-level object accepts C<root>, C<interval>, C<timeout>, optional
+C<runner>, and C<repositories>. Each repository requires C<name>, C<clone_url>,
+and C<refs>; C<initial_build> controls whether first-seen refs run immediately.
+
+=head1 EXIT STATUS
+
+Zero means polling completed normally. Command-line usage errors exit 64;
+configuration, polling, or execution errors are fatal.
+
+=cut

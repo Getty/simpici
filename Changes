@@ -8,6 +8,8 @@
     daemon image to GHCR from main; derive each job's container image and phase
     from its script name, run jobs within a phase concurrently and enforce
     barriers between ordered phases
+  - Add complete POD manuals and conventional help output for both command-line
+    programs, including explicit executor-path configuration
 
 0.001     2026-09-03 00:00:00Z
   - Initial project brief

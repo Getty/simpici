@@ -56,6 +56,10 @@ To run an event, provide its JSON document and a private state directory:
 perl -Ilib bin/simpici --root var --event event.json
 ```
 
+Both executables provide concise `--help` and complete `--man` output. Use
+`--runner` to override the shared executor path when SimpiCI is installed
+outside the repository checkout.
+
 Run the Git poller once or continuously from a JSON configuration:
 
 ```console

@@ -4,6 +4,7 @@ requires 'JSON::MaybeXS';
 requires 'Moo';
 requires 'namespace::autoclean';
 requires 'Path::Tiny';
+requires 'Pod::Usage';
 requires 'Types::Standard';
 
 on test => sub {
