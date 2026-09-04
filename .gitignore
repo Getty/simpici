@@ -24,3 +24,7 @@ dzil-local/
 !/.claude/agents/**
 !/.claude/skills/
 !/.claude/skills/**
+
+# karr materialized task view -- never commit
+tasks/
+config.yml
