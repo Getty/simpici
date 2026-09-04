@@ -1,7 +1,8 @@
 {{$NEXT}}
   - Start the App::SimpiCI distribution with a normalized event contract,
     exact detached checkout, supervised repository-script execution and static
-    JSON/log reports
+    JSON/log reports; add persistent Git ref polling with an explicit initial
+    build policy
 
 0.001     2026-09-03 00:00:00Z
   - Initial project brief

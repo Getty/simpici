@@ -7,6 +7,7 @@ for my $module (qw(
   App::SimpiCI
   App::SimpiCI::Event
   App::SimpiCI::Runner
+  App::SimpiCI::Source::GitPoll
   App::SimpiCI::Store
 )) {
   my $loaded = eval "use $module; 1";

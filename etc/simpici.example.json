@@ -1,0 +1,16 @@
+{
+  "root": "./var",
+  "interval": 60,
+  "timeout": 900,
+  "repositories": [
+    {
+      "name": "Getty/simpici",
+      "clone_url": "https://github.com/Getty/simpici.git",
+      "refs": ["refs/heads/main"],
+      "build_initial": true,
+      "platform": "linux",
+      "feature": "self"
+    }
+  ]
+}
+

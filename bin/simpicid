@@ -1,0 +1,34 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+
+use App::SimpiCI::Runner;
+use App::SimpiCI::Source::GitPoll;
+use App::SimpiCI::Store;
+use Getopt::Long qw( GetOptions );
+use JSON::MaybeXS;
+use Path::Tiny qw( path );
+
+my ($config_path, $once);
+GetOptions('config=s' => \$config_path, 'once' => \$once) or exit 64;
+die "Usage: simpicid --config simpici.json [--once]\n" unless $config_path;
+
+my $config = JSON::MaybeXS->new->decode(path($config_path)->slurp_utf8);
+my $store = App::SimpiCI::Store->new(root => path($config->{root} // './var'));
+my $runner = App::SimpiCI::Runner->new(
+  store   => $store,
+  timeout => $config->{timeout} // 3600
+);
+
+while (1) {
+  for my $repository ($config->{repositories}->@*) {
+    App::SimpiCI::Source::GitPoll->new(
+      store      => $store,
+      runner     => $runner,
+      repository => $repository
+    )->poll;
+  }
+  last if $once;
+  sleep($config->{interval} // 60);
+}
+

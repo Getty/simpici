@@ -24,6 +24,13 @@ To run an event, provide its JSON document and a private state directory:
 perl -Ilib bin/simpici --root var --event event.json
 ```
 
+Run the Git poller once or continuously from a JSON configuration:
+
+```console
+perl -Ilib bin/simpicid --config etc/simpici.json --once
+perl -Ilib bin/simpicid --config etc/simpici.json
+```
+
 The static report can be served locally through Traefik and nginx with
 `docker compose up -d --build`, then opened at <http://127.0.0.1:8080/>.
 
