@@ -12,7 +12,7 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: Getty/simpici/action@main
         env:
           CICD_REGISTRY: ghcr.io
@@ -20,4 +20,3 @@ jobs:
           CICD_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           CICD_IMAGE: ghcr.io/${{ github.repository }}
           CICD_PUBLISH_IMAGE: ${{ github.event_name != 'pull_request' }}
-
