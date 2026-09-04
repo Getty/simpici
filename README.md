@@ -20,19 +20,28 @@ prove -lr t/
 
 ## Hosted CI
 
-Projects keep their build logic in one executable `.cicd` script. A GitHub
-workflow only checks out the exact revision and invokes the reusable action:
+Projects keep their build logic in one executable `.cicd` script. The standard
+GitHub integration delegates its only job to the reusable workflow:
 
 ```yaml
-steps:
-  - uses: actions/checkout@v4
-  - uses: Getty/simpici/action@main
+jobs:
+  simpici:
+    permissions:
+      contents: read
+      packages: write
+    uses: Getty/simpici/.github/workflows/simpici.yml@main
 ```
 
-The action automatically selects the single `.cicd/linux+*+cicd.sh`, derives
-its feature name and supplies the same `CICD_*` environment and event JSON as
-the standalone runner. Forgejo uses the same action format; a repository can
-use `./action` after checkout, or a fully qualified remote action URL.
+The workflow checks out the triggering repository, grants its short-lived token
+GHCR upload access and invokes the SimpiCI action. The action automatically
+selects the single `.cicd/linux+*+cicd.sh`, derives its feature name and supplies
+the same `CICD_*` environment and event JSON as the standalone runner. The
+repository script decides whether and how to build an image; SimpiCI itself
+publishes `ghcr.io/getty/simpici:<commit>` and `latest` from `main`.
+
+Forgejo uses the same action format; a repository can use `./action` after
+checkout, or a fully qualified remote action URL. Registry credentials remain
+runner-specific environment supplied by its workflow.
 
 
 To run an event, provide its JSON document and a private state directory:

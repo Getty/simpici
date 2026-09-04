@@ -1,0 +1,23 @@
+name: SimpiCI
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Getty/simpici/action@main
+        env:
+          CICD_REGISTRY: ghcr.io
+          CICD_REGISTRY_USER: ${{ github.actor }}
+          CICD_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          CICD_IMAGE: ghcr.io/${{ github.repository }}
+          CICD_PUBLISH_IMAGE: ${{ github.event_name != 'pull_request' }}
+

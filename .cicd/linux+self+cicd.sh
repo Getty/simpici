@@ -18,3 +18,20 @@ fi
 
 t/action-runner.sh
 prove -lr t/
+
+if [[ -n "${CICD_IMAGE:-}" ]]; then
+  image="${CICD_IMAGE,,}"
+  docker build --file Containerfile --tag "$image:$CICD_COMMIT" .
+
+  if [[ "${CICD_PUBLISH_IMAGE:-false}" == true ]]; then
+    printf '%s' "$CICD_REGISTRY_PASSWORD" \
+      | docker login "$CICD_REGISTRY" \
+          --username "$CICD_REGISTRY_USER" --password-stdin
+    docker push "$image:$CICD_COMMIT"
+
+    if [[ "$CICD_REF" == refs/heads/main ]]; then
+      docker tag "$image:$CICD_COMMIT" "$image:latest"
+      docker push "$image:latest"
+    fi
+  fi
+fi

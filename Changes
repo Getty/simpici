@@ -3,7 +3,9 @@
     exact detached checkout, supervised repository-script execution and static
     JSON/log reports; add persistent Git ref polling with an explicit initial
     build policy and a reusable GitHub/Forgejo action that applies the same
-    zero-configuration repository-script contract on hosted runners
+    zero-configuration repository-script contract on hosted runners; provide a
+    reusable GitHub workflow with package-write access and publish the SimpiCI
+    daemon image to GHCR from main
 
 0.001     2026-09-03 00:00:00Z
   - Initial project brief
