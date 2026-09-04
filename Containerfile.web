@@ -1,3 +1,0 @@
-FROM docker.io/library/nginx:1.29-alpine
-COPY public/index.html /usr/share/nginx/html/index.html
-

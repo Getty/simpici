@@ -32,7 +32,7 @@ perl -Ilib bin/simpicid --config etc/simpici.json
 ```
 
 The static report can be served locally through Traefik and nginx with
-`docker compose up -d --build`, then opened at <http://127.0.0.1:8080/>.
+`docker compose up -d`, then opened at <http://127.0.0.1:8080/>.
 
 ## License
 

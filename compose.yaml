@@ -12,10 +12,9 @@ services:
     restart: unless-stopped
 
   web:
-    build:
-      context: .
-      dockerfile: Containerfile.web
+    image: docker.io/library/nginx:1.29-alpine
     volumes:
+      - ./public/index.html:/usr/share/nginx/html/index.html:ro
       - ./var/public/runs:/usr/share/nginx/html/runs:ro
     labels:
       traefik.enable: "true"
@@ -23,4 +22,3 @@ services:
       traefik.http.routers.simpici.entrypoints: web
       traefik.http.services.simpici.loadbalancer.server.port: "80"
     restart: unless-stopped
-
