@@ -1,0 +1,25 @@
+# Build artifacts
+App-SimpiCI-*/
+App-SimpiCI-*.tar.gz
+.build/
+
+# Test coverage and local dependencies
+cover_db/
+cpanfile.snapshot
+local/
+dzil-local/
+
+# Editor backups
+*~
+*.swp
+*.bak
+
+# Claude Code — commit shared skills and agent configuration
+!/.claude/
+/.claude/*
+!/.claude/settings.json
+!/.claude/agents/
+!/.claude/agents/**
+!/.claude/skills/
+!/.claude/skills/**
+

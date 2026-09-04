@@ -1,0 +1,31 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+
+use App::SimpiCI::Event;
+use App::SimpiCI::Runner;
+use App::SimpiCI::Store;
+use Getopt::Long qw( GetOptions );
+use JSON::MaybeXS;
+use Path::Tiny qw( path );
+
+my ($root, $event_path, $timeout);
+GetOptions(
+  'root=s'    => \$root,
+  'event=s'   => \$event_path,
+  'timeout=i' => \$timeout
+) or exit 64;
+$root //= './var';
+$timeout //= 3600;
+die "Usage: simpici --event event.json [--root var]\n" unless $event_path;
+
+my $data = JSON::MaybeXS->new->decode(path($event_path)->slurp_utf8);
+my $event = App::SimpiCI::Event->new($data->%*);
+my $store = App::SimpiCI::Store->new(root => path($root));
+my $report = App::SimpiCI::Runner->new(
+  store   => $store,
+  timeout => $timeout
+)->run($event);
+print JSON::MaybeXS->new(canonical => 1)->encode($report)."\n";
+exit($report->{state} eq 'success' || $report->{state} eq 'skipped' ? 0 : 1);
+

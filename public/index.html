@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SimpiCI</title>
+  <style>
+    body { background:#111827; color:#e5e7eb; font:16px system-ui; margin:2rem auto; max-width:72rem; padding:0 1rem }
+    h1 { color:#67e8f9 } a { color:#93c5fd } pre { background:#030712; padding:1rem; overflow:auto }
+    .success { color:#4ade80 } .failed,.timed_out,.signalled { color:#fb7185 } .running { color:#facc15 }
+  </style>
+</head>
+<body><h1>SimpiCI</h1><main id="app">Loading…</main>
+<script>
+const app = document.querySelector('#app');
+const run = location.hash.slice(1);
+const target = /^\d+$/.test(run) ? `/runs/${run}.json` : '/runs/index.json';
+fetch(target, {cache:'no-store'}).then(r => { if (!r.ok) throw Error(r.status); return r.json() })
+.then(data => {
+  if (data.runs) app.innerHTML = data.runs.map(n => `<p><a href="#${n}">Run ${n}</a></p>`).join('');
+  else app.innerHTML = `<h2 class="${data.state}">Run ${data.run}: ${data.state}</h2><p>${data.repository} — ${data.ref}</p><pre id="log"></pre>`,
+    fetch(data.log, {cache:'no-store'}).then(r => r.text()).then(t => document.querySelector('#log').textContent=t);
+}).catch(e => app.textContent=`Unable to load report: ${e}`);
+</script></body></html>
+
