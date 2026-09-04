@@ -18,6 +18,23 @@ checkouts, one repository-owned script and static JSON/log reports. See
 prove -lr t/
 ```
 
+## Hosted CI
+
+Projects keep their build logic in one executable `.cicd` script. A GitHub
+workflow only checks out the exact revision and invokes the reusable action:
+
+```yaml
+steps:
+  - uses: actions/checkout@v4
+  - uses: Getty/simpici/action@main
+```
+
+The action automatically selects the single `.cicd/linux+*+cicd.sh`, derives
+its feature name and supplies the same `CICD_*` environment and event JSON as
+the standalone runner. Forgejo uses the same action format; a repository can
+use `./action` after checkout, or a fully qualified remote action URL.
+
+
 To run an event, provide its JSON document and a private state directory:
 
 ```console
