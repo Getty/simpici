@@ -3,6 +3,7 @@ use Moo;
 
 use App::SimpiCI::Store;
 use Carp qw( croak );
+use Path::Tiny qw( path );
 use POSIX qw( WNOHANG setpgid strftime );
 use Time::HiRes qw( sleep time );
 use Types::Standard qw( Int InstanceOf );
@@ -18,6 +19,13 @@ has timeout => (
   is      => 'ro',
   isa     => Int,
   default => sub { 3600 },
+);
+
+has runner_script => (
+  is      => 'ro',
+  isa     => InstanceOf['Path::Tiny'],
+  coerce  => 1,
+  default => sub { path('action/run.sh')->absolute }
 );
 
 sub run {
@@ -48,13 +56,7 @@ sub run {
   $result = $self->_execute($log, 120, 'git', '-C', $workspace->stringify,
     'checkout', '--detach', $event->commit) if $result->{exit_code} == 0;
 
-  my $script = $workspace->child('.cicd',
-    $event->platform.'+'.$event->feature.'+cicd.sh');
-  if ($result->{exit_code} == 0 && !$script->is_file) {
-    $result = { exit_code => 127, error => 'CI/CD script not found: '.$script };
-    $log->append_utf8($result->{error}."\n");
-  }
-  if ($result->{exit_code} == 0 && $script->is_file) {
+  if ($result->{exit_code} == 0) {
     my $event_file = $self->store->write_json('runs/'.$run.'/event.json',
       $event->as_hash);
     my %environment = (
@@ -62,17 +64,17 @@ sub run {
       CICD_SOURCE     => $event->source,
       CICD_EVENT      => $event->event,
       CICD_REPOSITORY => $event->repository,
+      CICD_CLONE_URL  => $event->clone_url,
       CICD_REF        => $event->ref,
       CICD_COMMIT     => $event->commit,
-      CICD_PLATFORM   => $event->platform,
-      CICD_FEATURE    => $event->feature,
       CICD_WORKSPACE  => $workspace->stringify,
       CICD_EVENT_FILE => $event_file->stringify,
-      CICD_ROOT       => $workspace->child('.cicd')->stringify
+      CICD_ROOT       => $workspace->child('.cicd')->stringify,
+      GITHUB_WORKSPACE => $workspace->stringify
     );
-    $result = $self->_execute($log, $self->timeout, 
-      { %ENV, %environment }, $workspace->stringify, $script->stringify,
-      $event_file->stringify);
+    $result = $self->_execute($log, $self->timeout,
+      { %ENV, %environment }, $workspace->stringify,
+      $self->runner_script->stringify);
   }
 
   my $finished = time;

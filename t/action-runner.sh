@@ -1,41 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT
-mkdir -p "$test_root/repo/.cicd" "$test_root/tmp"
-cp action/run.sh "$test_root/run.sh"
-cat >"$test_root/repo/.cicd/linux+fixture+cicd.sh" <<'SCRIPT'
-#!/usr/bin/env bash
-set -euo pipefail
-test "$CICD_FEATURE" = fixture
-test "$CICD_PLATFORM" = linux
-test "$CICD_SOURCE" = github-actions
-test "$1" = "$CICD_EVENT_FILE"
-perl -MJSON::PP -e '
-  open my $fh, "<", $ARGV[0] or die $!;
-  local $/;
-  my $event = decode_json(<$fh>);
-  exit 1 unless $event->{commit} eq "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-' "$1"
-SCRIPT
-chmod +x "$test_root/repo/.cicd/linux+fixture+cicd.sh"
-
-RUNNER_OS=Linux \
-RUNNER_TEMP="$test_root/tmp" \
-GITHUB_WORKSPACE="$test_root/repo" \
-GITHUB_RUN_ID=42 \
-GITHUB_RUN_NUMBER=7 \
-GITHUB_EVENT_NAME=push \
-GITHUB_REPOSITORY=Getty/simpici \
-GITHUB_SERVER_URL=https://github.com \
-GITHUB_REF=refs/heads/main \
-GITHUB_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  "$test_root/run.sh"
-
-touch "$test_root/repo/.cicd/linux+other+cicd.sh"
-chmod +x "$test_root/repo/.cicd/linux+other+cicd.sh"
-if RUNNER_OS=Linux GITHUB_WORKSPACE="$test_root/repo" "$test_root/run.sh" 2>/dev/null; then
-  printf 'ambiguous script selection unexpectedly succeeded\n' >&2
-  exit 1
-fi
+mkdir -p "$test_root/.cicd" "$test_root/tmp"
+touch "$test_root/.cicd/linux+prepare.sh"
+touch "$test_root/.cicd/application+dingens+13+build.api.sh"
+touch "$test_root/.cicd/ghcr.io+application+dingens+13+publish.sh"
+plan="$(SIMPICI_PLAN_ONLY=true GITHUB_WORKSPACE="$test_root" RUNNER_TEMP="$test_root/tmp" action/run.sh)"
+expected=$'10\tprepare\tdocker.io/library/debian:latest\tlinux\tlinux+prepare.sh\n20\tbuild\tdocker.io/application/dingens:13\tapi\tapplication+dingens+13+build.api.sh\n50\tpublish\tghcr.io/application/dingens:13\tghcr.io+application+dingens+13\tghcr.io+application+dingens+13+publish.sh'
+[[ "$plan" == "$expected" ]] || { printf 'unexpected plan:\n%s\n' "$plan" >&2; exit 1; }

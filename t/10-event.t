@@ -11,9 +11,7 @@ my %args = (
   repository => 'LEDaquaristik/sunriser',
   clone_url  => 'git@src.ci:ledaquaristik/sunriser.git',
   ref        => 'refs/heads/master',
-  commit     => 'a' x 40,
-  platform   => 'linux',
-  feature    => 'sunriser',
+  commit     => 'a' x 40
 );
 
 my $event = App::SimpiCI::Event->new(%args);
@@ -32,4 +30,3 @@ like dies { App::SimpiCI::Event->new(%args, commit => 'abc123') },
   'rejects abbreviated commits';
 
 done_testing;
-

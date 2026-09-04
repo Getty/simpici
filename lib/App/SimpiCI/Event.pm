@@ -19,7 +19,7 @@ has event => (
   required => 1,
 );
 
-for my $attribute (qw( repository clone_url ref commit platform feature )) {
+for my $attribute (qw( repository clone_url ref commit )) {
   has $attribute => (
     is       => 'ro',
     isa      => Str,
@@ -41,17 +41,13 @@ sub BUILD {
     unless $self->ref =~ /\Arefs\//;
   croak __PACKAGE__.' repository must not contain NUL'
     if $self->repository =~ /\0/;
-  croak __PACKAGE__.' platform must not contain NUL'
-    if $self->platform =~ /\0/;
-  croak __PACKAGE__.' feature must not contain NUL'
-    if $self->feature =~ /\0/;
 }
 
 sub deduplication_key {
   my ( $self ) = @_;
 
   return sha256_hex(join "\0", map { $self->$_ }
-    qw( repository ref commit platform feature ));
+    qw( repository ref commit ));
 }
 
 sub as_hash {
@@ -64,8 +60,6 @@ sub as_hash {
     clone_url  => $self->clone_url,
     ref        => $self->ref,
     commit     => $self->commit,
-    platform   => $self->platform,
-    feature    => $self->feature,
     payload    => { $self->payload->%* },
   };
 }

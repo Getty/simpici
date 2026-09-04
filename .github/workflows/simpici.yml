@@ -18,5 +18,5 @@ jobs:
           CICD_REGISTRY: ghcr.io
           CICD_REGISTRY_USER: ${{ github.actor }}
           CICD_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-          CICD_IMAGE: ghcr.io/${{ github.repository }}
+          CICD_IMAGE_REPOSITORY: ghcr.io/${{ github.repository }}
           CICD_PUBLISH_IMAGE: ${{ github.event_name != 'pull_request' }}

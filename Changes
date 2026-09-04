@@ -5,7 +5,9 @@
     build policy and a reusable GitHub/Forgejo action that applies the same
     zero-configuration repository-script contract on hosted runners; provide a
     reusable GitHub workflow with package-write access and publish the SimpiCI
-    daemon image to GHCR from main
+    daemon image to GHCR from main; derive each job's container image and phase
+    from its script name, run jobs within a phase concurrently and enforce
+    barriers between ordered phases
 
 0.001     2026-09-03 00:00:00Z
   - Initial project brief

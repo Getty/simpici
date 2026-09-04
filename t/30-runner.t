@@ -14,12 +14,12 @@ my $fixture = path(tempdir(CLEANUP => 1));
 system('git', 'init', '-q', '-b', 'main', $fixture->stringify) == 0
   or die 'git init failed';
 $fixture->child('.cicd')->mkpath;
-$fixture->child('.cicd', 'linux+self+cicd.sh')->spew_utf8(<<'SCRIPT');
+$fixture->child('.cicd', 'linux+test.sh')->spew_utf8(<<'SCRIPT');
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'built %s at %s\n' "$CICD_REPOSITORY" "$CICD_COMMIT"
 SCRIPT
-chmod 0755, $fixture->child('.cicd', 'linux+self+cicd.sh');
+chmod 0755, $fixture->child('.cicd', 'linux+test.sh');
 system('git', '-C', $fixture->stringify, 'add', '.cicd') == 0
   or die 'git add failed';
 {
@@ -40,13 +40,19 @@ my $event = App::SimpiCI::Event->new(
   repository => 'simpici-fixture',
   clone_url  => $fixture->stringify,
   ref        => 'refs/heads/main',
-  commit     => $commit,
-  platform   => 'linux',
-  feature    => 'self'
+  commit     => $commit
 );
+my $runner_script = $root->child('runner.sh');
+$runner_script->spew_utf8(<<'RUNNER');
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$GITHUB_WORKSPACE/.cicd/linux+test.sh" "$CICD_EVENT_FILE"
+RUNNER
+chmod 0755, $runner_script;
 my $report = App::SimpiCI::Runner->new(
-  store   => App::SimpiCI::Store->new(root => $relative_root),
-  timeout => 30
+  store         => App::SimpiCI::Store->new(root => $relative_root),
+  timeout       => 30,
+  runner_script => $runner_script
 )->run($event);
 
 is $report->{state}, 'success', 'runs script with a relative state root';

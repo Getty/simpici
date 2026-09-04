@@ -53,9 +53,7 @@ sub poll {
       repository => $repository->{name},
       clone_url  => $repository->{clone_url},
       ref        => $ref,
-      commit     => $commit,
-      platform   => $repository->{platform},
-      feature    => $repository->{feature}
+      commit     => $commit
     ));
   }
   $self->store->write_json(
@@ -86,4 +84,3 @@ sub _ls_remote {
 }
 
 1;
-

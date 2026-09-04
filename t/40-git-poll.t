@@ -13,10 +13,10 @@ my $fixture = path(tempdir(CLEANUP => 1));
 system('git', 'init', '-q', '-b', 'main', $fixture->stringify) == 0
   or die 'git init failed';
 $fixture->child('.cicd')->mkpath;
-$fixture->child('.cicd', 'linux+self+cicd.sh')->spew_utf8(
+$fixture->child('.cicd', 'linux+test.sh')->spew_utf8(
   "#!/usr/bin/env bash\nexit 0\n"
 );
-chmod 0755, $fixture->child('.cicd', 'linux+self+cicd.sh');
+chmod 0755, $fixture->child('.cicd', 'linux+test.sh');
 system('git', '-C', $fixture->stringify, 'add', '.cicd') == 0
   or die 'git add failed';
 {
@@ -30,16 +30,25 @@ system('git', '-C', $fixture->stringify, 'add', '.cicd') == 0
 
 my $root = path(tempdir(CLEANUP => 1));
 my $store = App::SimpiCI::Store->new(root => $root);
+my $runner_script = $root->child('runner.sh');
+$runner_script->spew_utf8(<<'RUNNER');
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$GITHUB_WORKSPACE/.cicd/linux+test.sh" "$CICD_EVENT_FILE"
+RUNNER
+chmod 0755, $runner_script;
 my $poller = App::SimpiCI::Source::GitPoll->new(
   store  => $store,
-  runner => App::SimpiCI::Runner->new(store => $store, timeout => 30),
+  runner => App::SimpiCI::Runner->new(
+    store         => $store,
+    timeout       => 30,
+    runner_script => $runner_script
+  ),
   repository => {
     name          => 'fixture',
     clone_url     => $fixture->stringify,
     refs          => ['refs/heads/main'],
-    build_initial => 1,
-    platform      => 'linux',
-    feature       => 'self'
+    build_initial => 1
   }
 );
 
@@ -47,4 +56,3 @@ is scalar($poller->poll->@*), 1, 'initial policy can build current tip';
 is scalar($poller->poll->@*), 0, 'unchanged ref creates no duplicate run';
 
 done_testing;
-

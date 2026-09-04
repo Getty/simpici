@@ -30,8 +30,10 @@ executable shell script committed to the repository.
 
 The intended summary is:
 
-> Sources create runs. Every run checks out one exact revision and invokes one
-> script exactly once. The script decides which internal hooks apply.
+> Sources create runs. Every run checks out one exact revision, discovers its
+> top-level `.cicd/*.sh` files and executes them in filename-selected
+> containers. Fixed phases provide barriers; jobs within a phase run in
+> parallel.
 
 Avoid YAML pipelines, template inheritance, matrices, plugins, Kubernetes, and
 implicit composition in the first version.
@@ -97,9 +99,7 @@ Repository configuration needs at least:
     "refs/heads/master",
     "refs/tags/*"
   ],
-  "interval": 60,
-  "platform": "linux",
-  "feature": "sunriser"
+  "interval": 60
 }
 ```
 
@@ -132,48 +132,39 @@ on one run.
 Use a stable deduplication key derived from at least:
 
 ```text
-repository NUL ref NUL commit NUL platform NUL feature
+repository NUL ref NUL commit
 ```
 
 A SHA-256 digest of that tuple is sufficient. Persist the key before or
 atomically with queue insertion. Decide and document whether a manual retry
 reuses the original key or adds an explicit attempt/retry identifier.
 
-## Script selection
+## Script discovery and phases
 
-The repository owns ordinary executable scripts named by platform and feature:
+The repository owns ordinary executable scripts named by image and phase:
 
 ```text
 .cicd/
-├── linux+sunriser+cicd.sh
-├── linux+container+cicd.sh
-├── any+lint+cicd.sh
-└── lib/
-    ├── docker.sh
-    └── perl.sh
+├── linux+prepare.sh
+├── perl+5.40+test.unit.sh
+├── application+dingens+13+build.image.sh
+└── ghcr.io+application+dingens+13+publish.image.sh
 ```
 
-The exact location and naming convention need to be finalized. The important
-rules are:
+The grammar is `<image>+<phase>[.<job>].sh`. The phases are `prepare`, `build`,
+`test`, `package`, `publish`, and `deploy`, in that order. Every discovered job
+in a phase starts concurrently; all must finish successfully or skip before the
+next phase starts. Exit 78 means skipped. Any other nonzero exit stops later
+phases.
 
-- Select exactly one top-level script per run.
-- Do not merge matching fragments implicitly.
-- If fallback is supported, make its order small and deterministic, e.g.:
-
-  ```text
-  linux-amd64+container+cicd.sh
-  linux+container+cicd.sh
-  any+container+cicd.sh
-  ```
-
-- Stop after the first match.
-- Reuse is normal language-level reuse, such as:
-
-  ```bash
-  source "$CICD_ROOT/lib/docker.sh"
-  ```
-
-- No custom include syntax or pipeline DSL.
+Plus signs encode image components: `application+dingens+13` resolves to
+`docker.io/application/dingens:13`, while
+`ghcr.io+application+dingens+13` resolves to
+`ghcr.io/application/dingens:13`. Single-name aliases cover common defaults;
+for example `linux` is `docker.io/library/debian:latest`. The optional job name
+creates a stable identity and separate writable output/artifact directories.
+The checkout itself is mounted read-only. Only `publish` and `deploy` receive
+registry credentials.
 
 ## Checkout responsibility
 
@@ -186,8 +177,8 @@ The daemon must:
 2. Create an isolated workspace for the run.
 3. Fetch that exact revision.
 4. Check it out detached.
-5. Locate the CI/CD script in that checked-out revision.
-6. Invoke it with the workspace as the current directory.
+5. Discover and validate the CI/CD plan in that checked-out revision.
+6. Execute each job in its selected container with the workspace read-only.
 
 Conceptual commands:
 
@@ -205,11 +196,11 @@ generic daemon.
 
 ## Invocation contract
 
-Invoke one script once, passing the normalized event file as its first
-argument:
+Invoke each discovered script once, passing the normalized event file as its
+first argument:
 
 ```bash
-./linux+sunriser+cicd.sh "$CICD_EVENT_FILE"
+./perl+5.40+test.unit.sh "$CICD_EVENT_FILE"
 ```
 
 Minimum environment under consideration:
@@ -224,8 +215,9 @@ CICD_REF=refs/heads/master
 CICD_BRANCH=master
 CICD_COMMIT=abc123
 CICD_TAG=
-CICD_PLATFORM=linux
-CICD_FEATURE=sunriser
+CICD_PHASE=test
+CICD_JOB=unit
+CICD_IMAGE_REF=docker.io/library/perl:5.40
 CICD_WORKSPACE=/var/lib/simpicid/work/1842
 CICD_EVENT_FILE=/var/lib/simpicid/runs/1842/event.json
 CICD_ARTIFACTS=/var/lib/simpicid/public/runs/1842/artifacts
@@ -251,7 +243,7 @@ Proposed exit status contract:
 
 ## Hooks remain inside the script
 
-The daemon always invokes the selected script for an accepted run. Branch,
+The runner invokes all discovered scripts for an accepted run. Branch,
 tag, event, and release policy live inside that script using normal code.
 
 Example:
@@ -457,7 +449,7 @@ An optional `simpici` CLI may provide:
 simpici status
 simpici runs
 simpici show 1842
-simpici run sunriser --feature container --ref master
+simpici run sunriser --ref master
 simpici retry 1842
 simpici cancel 1842
 ```
@@ -471,8 +463,8 @@ remain completely static.
 - Verify webhook signatures using constant-time comparison.
 - Enforce a small request-body limit and content type.
 - Add replay protection where the forge supports delivery IDs/timestamps.
-- Allowlist repositories, clone URLs, platforms, features, and script paths
-  server-side.
+- Allowlist repositories and clone URLs server-side; apply an explicit image
+  policy before running untrusted repositories.
 - Check out the exact commit SHA detached; never trust a branch name as the
   executable revision.
 - Treat scripts from untrusted pull requests as arbitrary code.
@@ -585,8 +577,8 @@ repository's script.
 - interrupted write never exposes partial JSON
 - worker restart recovers or clearly marks an abandoned run
 - exact requested SHA is checked out detached
-- invalid/missing script fails clearly
-- fallback script resolution is deterministic
+- invalid/missing scripts and duplicate job identities fail clearly
+- image parsing and phase ordering are deterministic
 - exit `0`, exit `78`, nonzero exit, signal, and timeout map correctly
 - stdout/stderr reach the log without HTML interpretation
 - run ID/path traversal attempts are rejected
@@ -598,11 +590,6 @@ repository's script.
 
 - The repository is `simpici`, the distribution/module is `App-SimpiCI` /
   `App::SimpiCI`, and the daemon executable remains `simpicid`.
-- Does `platform` mean operating platform (`linux-amd64`) while `feature`
-  means build capability (`container`, `sunriser`), or should product identity
-  be a separate axis?
-- Should there be exactly one script per repository (`cicd.sh`) with all hooks,
-  or multiple explicitly selected `platform+feature+cicd.sh` entry points?
 - What is the precise first-poll policy?
 - Where will repositories be cloned from initially: Forgejo/src.ci, GitHub, or
   both?
@@ -610,7 +597,8 @@ repository's script.
 - Which local MTA/sendmail command should be used?
 - What public/internal hostname will serve the static UI?
 - How long should logs, workspaces, metadata, and artifacts be retained?
-- Which events may receive registry or deployment credentials?
+- Which repositories and refs may receive deployment credentials? Registry
+  credentials are restricted to the `publish` and `deploy` phases.
 
 ## Current foundation
 

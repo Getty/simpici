@@ -1,15 +1,15 @@
 # App::SimpiCI
 
 SimpiCI is a small Git-aware CI daemon. It accepts events from Git polling,
-webhooks or trusted manual requests, checks out one exact revision and invokes
-one ordinary executable script owned by that repository.
+webhooks or trusted manual requests, checks out one exact revision and executes
+the repository's top-level `.cicd/*.sh` jobs in selected containers.
 
 It intentionally has no workflow DSL, step graph, template inheritance or
 matrix expansion. Project-specific build and release policy stays in versioned
 shell code next to the project it builds.
 
 The first vertical slice supports trusted manual events, exact detached
-checkouts, one repository-owned script and static JSON/log reports. See
+checkouts, phased repository-owned jobs and static JSON/log reports. See
 `TODO.md` for the broader design and remaining polling/queue work.
 
 ## Development
@@ -20,7 +20,7 @@ prove -lr t/
 
 ## Hosted CI
 
-Projects keep their build logic in one executable `.cicd` script. The standard
+Projects keep their build logic in executable `.cicd` scripts. The standard
 GitHub integration delegates its only job to the reusable workflow:
 
 ```yaml
@@ -33,11 +33,17 @@ jobs:
 ```
 
 The workflow checks out the triggering repository, grants its short-lived token
-GHCR upload access and invokes the SimpiCI action. The action automatically
-selects the single `.cicd/linux+*+cicd.sh`, derives its feature name and supplies
-the same `CICD_*` environment and event JSON as the standalone runner. The
-repository script decides whether and how to build an image; SimpiCI itself
-publishes `ghcr.io/getty/simpici:<commit>` and `latest` from `main`.
+GHCR upload access and invokes the SimpiCI action. Top-level scripts use
+`<image>+<phase>[.<job>].sh`; for example `application+dingens+13+build.api.sh`
+runs in `docker.io/application/dingens:13` during the build phase. Scripts in
+one phase run concurrently, and the next phase starts after all of them finish.
+The fixed order is prepare, build, test, package, publish and deploy.
+
+Aliases provide convenient defaults: `linux` is `debian:latest`, while `perl`,
+`node` and `python` select their official latest images. Explicit forms such as
+`perl+5.40+test.sh` and `ghcr.io+application+dingens+13+publish.sh` select exact
+repositories and tags. SimpiCI supplies the same `CICD_*` event context to every
+container, with job-specific output and artifact directories.
 
 Forgejo uses the same action format; a repository can use `./action` after
 checkout, or a fully qualified remote action URL. Registry credentials remain

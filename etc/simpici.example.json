@@ -7,10 +7,7 @@
       "name": "Getty/simpici",
       "clone_url": "https://github.com/Getty/simpici.git",
       "refs": ["refs/heads/main"],
-      "build_initial": true,
-      "platform": "linux",
-      "feature": "self"
+      "build_initial": true
     }
   ]
 }
-
