@@ -8,6 +8,7 @@ cover_db/
 cpanfile.snapshot
 local/
 dzil-local/
+/var/
 
 # Editor backups
 *~
@@ -22,4 +23,3 @@ dzil-local/
 !/.claude/agents/**
 !/.claude/skills/
 !/.claude/skills/**
-

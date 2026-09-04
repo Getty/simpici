@@ -24,8 +24,9 @@ sub run {
   my ( $self, $event ) = @_;
 
   my $run = $self->store->allocate_run;
-  my $workspace = $self->store->root->child('work', $run);
-  my $log = $self->store->root->child('public', 'runs', $run.'.log');
+  my $state_root = $self->store->root->absolute;
+  my $workspace = $state_root->child('work', $run);
+  my $log = $state_root->child('public', 'runs', $run.'.log');
   my $started = time;
   my $report = {
     run        => $run,

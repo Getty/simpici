@@ -33,6 +33,7 @@ system('git', '-C', $fixture->stringify, 'add', '.cicd') == 0
 chomp(my $commit = qx(git -C @{[$fixture->stringify]} rev-parse HEAD));
 
 my $root = path(tempdir(CLEANUP => 1));
+my $relative_root = $root->relative;
 my $event = App::SimpiCI::Event->new(
   source     => 'manual',
   event      => 'push',
@@ -44,11 +45,11 @@ my $event = App::SimpiCI::Event->new(
   feature    => 'self'
 );
 my $report = App::SimpiCI::Runner->new(
-  store   => App::SimpiCI::Store->new(root => $root),
+  store   => App::SimpiCI::Store->new(root => $relative_root),
   timeout => 30
 )->run($event);
 
-is $report->{state}, 'success', 'runs checked-out repository script';
+is $report->{state}, 'success', 'runs script with a relative state root';
 like $root->child('public', 'runs', '1.log')->slurp_utf8,
   qr/built simpici-fixture at \Q$commit\E/,
   'captures script output with invocation environment';
