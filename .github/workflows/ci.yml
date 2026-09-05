@@ -7,8 +7,14 @@ on:
 jobs:
   dist:
     runs-on: ubuntu-latest
+    container:
+      image: perl:5.40-bookworm
     steps:
       - uses: actions/checkout@v6
+      - name: Fix safe.directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: perl -V
+        run: perl -V
       - uses: Getty/p5-dist-zilla-pluginbundle-author-getty/.github/actions/dzil-test@main
 
   dockerhub:
