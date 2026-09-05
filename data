@@ -1,0 +1,87 @@
+---
+class: standard
+created: 2026-09-05T01:10:45Z
+id: 6
+priority: medium
+status: backlog
+tags:
+- windows
+- executor
+- grammar
+title: 'Windows-Jobs: Ausfuehrungsmodell fuer nicht-Linux-Ziele'
+updated: 2026-09-05T01:10:45Z
+---
+
+AUSLOESER
+
+tzmrit-display soll seine CI auf SimpiCI umstellen. Die Linux-Seite passt
+sofort (python ist schon ein Image-Alias, aus dem pytest-Lauf wird
+.cicd/python+3.13+test.unit.sh). Der Windows-Teil kann nicht mit: dort baut
+ein windows-latest-Job per NSIS und packaging/build.bat einen
+tzmrit-display-setup-*.exe und haengt ihn als Asset ans GitHub Release. Das
+Repo bleibt deshalb vorerst hybrid - SimpiCI fuer Linux, GitHub Actions fuer
+Windows. Dieses Ticket beschreibt, was SimpiCI koennen muesste, damit der
+Hybrid wieder verschwinden kann.
+
+WO ES HEUTE BRICHT (bin/simpici-executor)
+
+1. run_job() Zeile ~155 startet jeden Job mit docker run und einem Linux-Image.
+   Auf einem windows-latest-Runner laeuft Docker im Windows-Container-Modus;
+   Linux-Images sind dort nicht startbar.
+2. Die Mounts Zeile ~139 (-v $workspace:/workspace:ro) setzen POSIX-Pfade
+   voraus. Unter Git Bash wird C:\... gemangelt - klassische Fehlerquelle.
+3. Die Grammatik <image>+<phase>[.<job>].sh hat nur eine Achse: das Image.
+   Es gibt keinen Platz fuer die Frage, WO ein Job laeuft.
+4. Jobs sind .sh. Windows-Werkzeuge (NSIS, PyInstaller, signtool) wollen
+   .ps1/.cmd oder zumindest einen definierten Bash-Dialekt.
+5. Die composite action nutzt shell: bash - auf Windows-Runnern ist das Git
+   Bash, existiert also. Der Executor selbst waere dort grundsaetzlich
+   lauffaehig; es ist das Ausfuehrungsmodell dahinter, das nicht passt.
+
+DREI WEGE, MIT UNTERSCHIEDLICHEM PREIS
+
+A) Windows-Container. Image-Alias windows ->
+   mcr.microsoft.com/windows/servercore:ltsc2022, Jobs laufen weiter
+   containerisiert. Konsistent mit dem bestehenden Modell, aber: mehrere GB
+   pro Image, Host-und-Container-Buildversionen muessen zusammenpassen, und
+   ein Windows-Runner ist Pflicht. Teuer und langsam fuer das, was der
+   Ausloeser braucht.
+
+B) Host-native Jobs. Ein reservierter Prefix (host/native) fuehrt das Skript
+   ohne Container direkt auf dem Runner aus. Fuer den NSIS-Fall genau
+   richtig - der braucht Windows-Werkzeuge, keine Isolation. Preis: es bricht
+   das Versprechen, dass jeder Job in einem gewaehlten Image laeuft, und
+   damit die Reproduzierbarkeit. Wenn, dann sichtbar im Dateinamen und nicht
+   als stille Ausnahme.
+
+C) Plattform-Achse in der Grammatik, z.B. windows.native+package.installer.ps1
+   oder linux.python+3.13+test.unit.sh mit linux als Default. Ehrlichste
+   Loesung, weil sie die Frage WO neben die Frage WOMIT stellt, statt sie in
+   den Image-Namen zu schmuggeln. Aber sie fasst die Grammatik an, die das
+   Kernversprechen des Projekts ist - jede Aenderung dort wiegt schwer.
+
+EMPFEHLUNG
+
+B als Mechanik, C als Schreibweise: die Plattform wird Teil des Dateinamens,
+und native ist ein Image-Ausdruck, der explizit KEIN Image bedeutet. Damit
+bleibt lesbar, was passiert, ohne dass ein zweiter Konfigurationsort
+entsteht. A spaeter nachruesten, falls jemand echte Windows-Isolation
+braucht.
+
+VORHER ZU KLAEREN
+
+- Will SimpiCI ueberhaupt nicht-containerisierte Jobs? Das ist eine
+  Produktentscheidung, keine Implementierungsfrage - AGENTS.md sagt
+  ausdruecklich, das Ding soll kleiner bleiben als eine CI-Plattform.
+- Wie waehlt der native Daemon (nicht die Action) einen Windows-Host aus?
+  Beruehrt #1 (Dispatcher/Runner-Split) und #4 (Runner-VM) direkt.
+- Artefakt-Rueckgabe: CICD_ARTIFACTS ist heute ein Mount. Ohne Container
+  muss der Pfad anders gesetzt werden.
+
+DANACH IN tzmrit-display
+
+Windows-Test und Installer-Job aus .github/workflows/ci.yml nach .cicd/
+ziehen; die ci.yml faellt dann auf den blossen Aufruf des reusable workflow
+zusammen. Offen bleibt dabei, wer das Release-Asset anhaengt - das macht
+heute softprops/action-gh-release und ist Actions-spezifisch, also
+eigentlich ein eigenes Thema (Release-Assets an Git-Forges).
