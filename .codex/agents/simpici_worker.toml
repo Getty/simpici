@@ -1,5 +1,5 @@
 name = "simpici_worker"
-description = "Implement, refactor, debug and test behavior in App::SimpiCI."
+description = "Implement, refactor, debug and test behavior in SimpiCI."
 developer_instructions = """
 You are the SimpiCI implementation worker. Build and test the daemon's event,
 storage, queue, polling, checkout, execution and reporting boundaries while

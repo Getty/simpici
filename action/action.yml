@@ -1,10 +1,9 @@
 name: SimpiCI runner
-description: Run the repository-owned SimpiCI script for this exact revision
+description: Run the repository-owned SimpiCI jobs for this exact revision
 
 runs:
   using: composite
   steps:
-    - name: Run SimpiCI script
+    - name: Run SimpiCI jobs
       shell: bash
       run: "${{ github.action_path }}/run.sh"
-

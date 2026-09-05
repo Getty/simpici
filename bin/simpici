@@ -1,93 +1,9 @@
 #!/usr/bin/env perl
+# PODNAME: simpici
+# ABSTRACT: Run one normalized SimpiCI event
 use strict;
 use warnings;
 
-use App::SimpiCI::Event;
-use App::SimpiCI::Runner;
-use App::SimpiCI::Store;
-use Getopt::Long qw( GetOptions );
-use JSON::MaybeXS;
-use Path::Tiny qw( path );
-use Pod::Usage qw( pod2usage );
+use SimpiCI::App::Run;
 
-my ($root, $event_path, $timeout, $runner_script, $help, $man);
-GetOptions(
-  'root=s'    => \$root,
-  'event=s'   => \$event_path,
-  'timeout=i' => \$timeout,
-  'runner=s'  => \$runner_script,
-  'help|h'    => \$help,
-  'man'       => \$man
-) or pod2usage(-exitval => 64, -verbose => 1);
-pod2usage(-exitval => 0, -verbose => 1) if $help;
-pod2usage(-exitval => 0, -verbose => 2) if $man;
-$root //= './var';
-$timeout //= 3600;
-pod2usage(-exitval => 64, -verbose => 1,
-  -message => 'An event JSON file is required.') unless $event_path;
-
-my $data = JSON::MaybeXS->new->decode(path($event_path)->slurp_utf8);
-my $event = App::SimpiCI::Event->new($data->%*);
-my $store = App::SimpiCI::Store->new(root => path($root));
-my $report = App::SimpiCI::Runner->new(
-  store   => $store,
-  timeout => $timeout,
-  ($runner_script ? (runner_script => path($runner_script)) : ())
-)->run($event);
-print JSON::MaybeXS->new(canonical => 1)->encode($report)."\n";
-exit($report->{state} eq 'success' || $report->{state} eq 'skipped' ? 0 : 1);
-
-=head1 NAME
-
-simpici - run one normalized SimpiCI event
-
-=head1 SYNOPSIS
-
-  simpici --event event.json [--root var] [--timeout 3600]
-  simpici --event event.json --runner /opt/simpici/action/run.sh
-  simpici --help
-
-=head1 DESCRIPTION
-
-C<simpici> is the trusted one-shot interface. It validates a normalized event,
-allocates a run, checks out the exact commit detached, and invokes the shared
-SimpiCI executor. The executor discovers top-level C<.cicd/*.sh> jobs and runs
-them in ordered container phases.
-
-=head1 OPTIONS
-
-=over 4
-
-=item B<--event> I<file>
-
-Required JSON event containing C<source>, C<event>, C<repository>, C<clone_url>,
-C<ref>, and a full 40- or 64-hex C<commit>.
-
-=item B<--root> I<directory>
-
-Private state, checkout, log, and report root. Defaults to C<./var>.
-
-=item B<--timeout> I<seconds>
-
-Maximum executor runtime. Defaults to 3600 seconds.
-
-=item B<--runner> I<file>
-
-Executor path. Defaults to C<action/run.sh> resolved from the current directory.
-
-=item B<--help>, B<-h>
-
-Print concise help.
-
-=item B<--man>
-
-Print the complete manual.
-
-=back
-
-=head1 EXIT STATUS
-
-Zero means success or intentional skip. One means a failed run. Command-line
-usage errors exit 64.
-
-=cut
+exit SimpiCI::App::Run->run(@ARGV);

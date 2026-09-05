@@ -1,8 +1,12 @@
-package App::SimpiCI::Runner;
+package SimpiCI::Runner;
+
 use Moo;
 
-use App::SimpiCI::Store;
+# ABSTRACT: Exact-checkout SimpiCI run supervisor
+
+use SimpiCI::Store;
 use Carp qw( croak );
+use File::Which qw( which );
 use Path::Tiny qw( path );
 use POSIX qw( WNOHANG setpgid strftime );
 use Time::HiRes qw( sleep time );
@@ -11,7 +15,7 @@ use namespace::autoclean;
 
 has store => (
   is       => 'ro',
-  isa      => InstanceOf['App::SimpiCI::Store'],
+  isa      => InstanceOf['SimpiCI::Store'],
   required => 1,
 );
 
@@ -22,11 +26,20 @@ has timeout => (
 );
 
 has runner_script => (
-  is      => 'ro',
+  is      => 'lazy',
   isa     => InstanceOf['Path::Tiny'],
-  coerce  => 1,
-  default => sub { path('action/run.sh')->absolute }
+  coerce  => 1
 );
+
+sub _build_runner_script {
+  my ( $self ) = @_;
+
+  my $repository_executor = path('bin/simpici-executor')->absolute;
+  return $repository_executor if -x $repository_executor;
+  my $installed_executor = which('simpici-executor');
+  croak __PACKAGE__.' cannot find simpici-executor' unless $installed_executor;
+  return path($installed_executor);
+}
 
 sub run {
   my ( $self, $event ) = @_;
@@ -135,3 +148,26 @@ sub _timestamp {
 }
 
 1;
+
+=head1 NAME
+
+SimpiCI::Runner - exact-checkout SimpiCI run supervisor
+
+=head1 SYNOPSIS
+
+  my $runner = SimpiCI::Runner->new(
+    store         => $store,
+    timeout       => 3600,
+    runner_script => 'action/run.sh'
+  );
+  my $report = $runner->run($event);
+
+=head1 METHODS
+
+=head2 run
+
+Allocates a run, checks out the event's exact commit detached, invokes the
+shared container executor, writes sanitized public state and logs, and returns
+a report hash.
+
+=cut

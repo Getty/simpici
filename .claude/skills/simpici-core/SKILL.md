@@ -6,7 +6,7 @@ description: Use for SimpiCI architecture and implementation work involving even
 # SimpiCI core
 
 SimpiCI is a small Git-aware job runner, not a general CI platform. The repo and
-distribution are `simpici` and `App::SimpiCI`; the daemon is `simpicid`; the
+distribution are `simpici` and `SimpiCI`; the daemon is `simpicid`; the
 optional trusted operator CLI is `simpici`.
 
 ## Product boundary

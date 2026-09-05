@@ -3,9 +3,9 @@ use strict;
 use warnings;
 use Test2::V0;
 
-use App::SimpiCI::Runner;
-use App::SimpiCI::Source::GitPoll;
-use App::SimpiCI::Store;
+use SimpiCI::Runner;
+use SimpiCI::Source::GitPoll;
+use SimpiCI::Store;
 use File::Temp qw( tempdir );
 use Path::Tiny qw( path );
 
@@ -29,7 +29,7 @@ system('git', '-C', $fixture->stringify, 'add', '.cicd') == 0
 }
 
 my $root = path(tempdir(CLEANUP => 1));
-my $store = App::SimpiCI::Store->new(root => $root);
+my $store = SimpiCI::Store->new(root => $root);
 my $runner_script = $root->child('runner.sh');
 $runner_script->spew_utf8(<<'RUNNER');
 #!/usr/bin/env bash
@@ -37,9 +37,9 @@ set -euo pipefail
 exec "$GITHUB_WORKSPACE/.cicd/linux+test.sh" "$CICD_EVENT_FILE"
 RUNNER
 chmod 0755, $runner_script;
-my $poller = App::SimpiCI::Source::GitPoll->new(
+my $poller = SimpiCI::Source::GitPoll->new(
   store  => $store,
-  runner => App::SimpiCI::Runner->new(
+  runner => SimpiCI::Runner->new(
     store         => $store,
     timeout       => 30,
     runner_script => $runner_script

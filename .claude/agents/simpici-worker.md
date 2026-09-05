@@ -1,6 +1,6 @@
 ---
 name: simpici-worker
-description: Implement, refactor, debug and test behavior in App::SimpiCI.
+description: Implement, refactor, debug and test behavior in SimpiCI.
 model: inherit
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:

@@ -1,15 +1,17 @@
 {{$NEXT}}
-  - Start the App::SimpiCI distribution with a normalized event contract,
-    exact detached checkout, supervised repository-script execution and static
-    JSON/log reports; add persistent Git ref polling with an explicit initial
-    build policy and a reusable GitHub/Forgejo action that applies the same
-    zero-configuration repository-script contract on hosted runners; provide a
-    reusable GitHub workflow with package-write access and publish the SimpiCI
-    daemon image to GHCR from main; derive each job's container image and phase
-    from its script name, run jobs within a phase concurrently and enforce
-    barriers between ordered phases
+  - Introduce the SimpiCI distribution with normalized events, exact detached
+    checkouts, filesystem state and sanitized static JSON/log reports.
+  - Poll configured Git refs persistently with an explicit initial-build
+    policy.
+  - Discover repository jobs from their filenames, execute them in selected
+    containers and enforce ordered phase barriers with same-phase concurrency.
+  - Provide a reusable GitHub/Forgejo action and GitHub workflow for the same
+    zero-configuration repository-job contract used by the native daemon.
   - Add complete POD manuals and conventional help output for both command-line
-    programs, including explicit executor-path configuration
-
-0.001     2026-09-03 00:00:00Z
-  - Initial project brief
+    programs, including explicit executor-path configuration.
+  - Put reusable core classes under SimpiCI::* and command implementations
+    under SimpiCI::App::*.
+  - Install the shared phase executor as simpici-executor so CPAN, containers,
+    GitHub and Forgejo use the same runnable implementation.
+  - Publish the daemon image primarily as raudssus/simpici on Docker Hub and
+    mirror it to GHCR with independent CI jobs.

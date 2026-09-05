@@ -1,9 +1,12 @@
-package App::SimpiCI::Source::GitPoll;
+package SimpiCI::Source::GitPoll;
+
 use Moo;
 
-use App::SimpiCI::Event;
-use App::SimpiCI::Runner;
-use App::SimpiCI::Store;
+# ABSTRACT: Poll configured Git refs for SimpiCI
+
+use SimpiCI::Event;
+use SimpiCI::Runner;
+use SimpiCI::Store;
 use Carp qw( croak );
 use IPC::Open3 qw( open3 );
 use JSON::MaybeXS;
@@ -14,13 +17,13 @@ use namespace::autoclean;
 
 has store => (
   is       => 'ro',
-  isa      => InstanceOf['App::SimpiCI::Store'],
+  isa      => InstanceOf['SimpiCI::Store'],
   required => 1,
 );
 
 has runner => (
   is       => 'ro',
-  isa      => InstanceOf['App::SimpiCI::Runner'],
+  isa      => InstanceOf['SimpiCI::Runner'],
   required => 1,
 );
 
@@ -47,7 +50,7 @@ sub poll {
     my $old = $previous->{$ref};
     next if defined $old && $old eq $commit;
     next unless defined $old || $repository->{build_initial};
-    push @reports, $self->runner->run(App::SimpiCI::Event->new(
+    push @reports, $self->runner->run(SimpiCI::Event->new(
       source     => 'git-poll',
       event      => 'push',
       repository => $repository->{name},
@@ -84,3 +87,30 @@ sub _ls_remote {
 }
 
 1;
+
+=head1 NAME
+
+SimpiCI::Source::GitPoll - poll configured Git refs for SimpiCI
+
+=head1 SYNOPSIS
+
+  my $reports = SimpiCI::Source::GitPoll->new(
+    store      => $store,
+    runner     => $runner,
+    repository => {
+      name          => 'owner/project',
+      clone_url     => 'https://example/owner/project.git',
+      refs          => ['refs/heads/main'],
+      build_initial => 1
+    }
+  )->poll;
+
+=head1 METHODS
+
+=head2 poll
+
+Reads the configured remote refs once, compares them with persisted state,
+runs accepted changes, saves the new observation, and returns an array reference
+of generated reports.
+
+=cut

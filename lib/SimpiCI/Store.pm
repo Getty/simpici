@@ -1,5 +1,8 @@
-package App::SimpiCI::Store;
+package SimpiCI::Store;
+
 use Moo;
+
+# ABSTRACT: Private filesystem persistence for SimpiCI
 
 use Carp qw( croak );
 use Fcntl qw( LOCK_EX SEEK_SET );
@@ -73,3 +76,27 @@ sub write_json {
 }
 
 1;
+
+=head1 NAME
+
+SimpiCI::Store - private filesystem persistence for SimpiCI
+
+=head1 METHODS
+
+=head2 prepare
+
+Creates the required work, run, and public-report directories and returns the
+store.
+
+=head2 allocate_run
+
+Atomically allocates and returns the next monotonically increasing run number.
+
+=head2 write_json
+
+  my $path = $store->write_json($relative_path, $value);
+
+Publishes deterministic JSON atomically below the store root. Absolute paths
+and parent-directory traversal are rejected.
+
+=cut

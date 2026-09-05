@@ -1,5 +1,8 @@
-package App::SimpiCI::Event;
+package SimpiCI::Event;
+
 use Moo;
+
+# ABSTRACT: Validated normalized repository event
 
 use Carp qw( croak );
 use Digest::SHA qw( sha256_hex );
@@ -72,3 +75,34 @@ sub as_json {
 }
 
 1;
+
+=head1 NAME
+
+SimpiCI::Event - validated normalized repository event
+
+=head1 SYNOPSIS
+
+  my $event = SimpiCI::Event->new(
+    source     => 'manual',
+    event      => 'push',
+    repository => 'owner/project',
+    clone_url  => 'https://example/owner/project.git',
+    ref        => 'refs/heads/main',
+    commit     => $full_object_id
+  );
+
+=head1 METHODS
+
+=head2 deduplication_key
+
+Returns a SHA-256 key derived from repository, ref, and commit.
+
+=head2 as_hash
+
+Returns a detached copy of the normalized event data.
+
+=head2 as_json
+
+Returns the event as deterministic JSON.
+
+=cut

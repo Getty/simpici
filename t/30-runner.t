@@ -3,9 +3,9 @@ use strict;
 use warnings;
 use Test2::V0;
 
-use App::SimpiCI::Event;
-use App::SimpiCI::Runner;
-use App::SimpiCI::Store;
+use SimpiCI::Event;
+use SimpiCI::Runner;
+use SimpiCI::Store;
 use File::Temp qw( tempdir );
 use JSON::MaybeXS;
 use Path::Tiny qw( path );
@@ -34,7 +34,7 @@ chomp(my $commit = qx(git -C @{[$fixture->stringify]} rev-parse HEAD));
 
 my $root = path(tempdir(CLEANUP => 1));
 my $relative_root = $root->relative;
-my $event = App::SimpiCI::Event->new(
+my $event = SimpiCI::Event->new(
   source     => 'manual',
   event      => 'push',
   repository => 'simpici-fixture',
@@ -49,8 +49,8 @@ set -euo pipefail
 exec "$GITHUB_WORKSPACE/.cicd/linux+test.sh" "$CICD_EVENT_FILE"
 RUNNER
 chmod 0755, $runner_script;
-my $report = App::SimpiCI::Runner->new(
-  store         => App::SimpiCI::Store->new(root => $relative_root),
+my $report = SimpiCI::Runner->new(
+  store         => SimpiCI::Store->new(root => $relative_root),
   timeout       => 30,
   runner_script => $runner_script
 )->run($event);

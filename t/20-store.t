@@ -3,13 +3,13 @@ use strict;
 use warnings;
 use Test2::V0;
 
-use App::SimpiCI::Store;
+use SimpiCI::Store;
 use File::Temp qw( tempdir );
 use JSON::MaybeXS;
 use Path::Tiny qw( path );
 
 my $root = path(tempdir(CLEANUP => 1));
-my $store = App::SimpiCI::Store->new(root => $root);
+my $store = SimpiCI::Store->new(root => $root);
 
 is $store->allocate_run, 1, 'first run is one';
 is $store->allocate_run, 2, 'run counter increases';

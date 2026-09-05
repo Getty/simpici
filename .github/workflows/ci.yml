@@ -5,9 +5,26 @@ on:
   pull_request:
 
 jobs:
-  simpici:
+  dist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: Getty/p5-dist-zilla-pluginbundle-author-getty/.github/actions/dzil-test@main
+
+  dockerhub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: Getty/simpici/action@main
+        env:
+          CICD_REGISTRY: docker.io
+          CICD_REGISTRY_USER: raudssus
+          CICD_REGISTRY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
+          CICD_IMAGE_REPOSITORY: raudssus/simpici
+          CICD_PUBLISH_IMAGE: ${{ github.event_name != 'pull_request' }}
+
+  ghcr:
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/simpici.yml
-

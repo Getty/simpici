@@ -3,7 +3,7 @@ use strict;
 use warnings;
 use Test2::V0;
 
-use App::SimpiCI::Event;
+use SimpiCI::Event;
 
 my %args = (
   source     => 'git-poll',
@@ -14,18 +14,18 @@ my %args = (
   commit     => 'a' x 40
 );
 
-my $event = App::SimpiCI::Event->new(%args);
+my $event = SimpiCI::Event->new(%args);
 is $event->as_hash, { %args, payload => {} }, 'event has canonical shape';
 
 is length($event->deduplication_key), 64, 'deduplication key is SHA-256';
 is $event->deduplication_key,
-  App::SimpiCI::Event->new(%args, source => 'webhook')->deduplication_key,
+  SimpiCI::Event->new(%args, source => 'webhook')->deduplication_key,
   'source does not split otherwise identical runs';
 
-like dies { App::SimpiCI::Event->new(%args, ref => '../master') },
+like dies { SimpiCI::Event->new(%args, ref => '../master') },
   qr/ref must start with refs\//,
   'rejects non-canonical refs';
-like dies { App::SimpiCI::Event->new(%args, commit => 'abc123') },
+like dies { SimpiCI::Event->new(%args, commit => 'abc123') },
   qr/full hexadecimal object id/,
   'rejects abbreviated commits';
 

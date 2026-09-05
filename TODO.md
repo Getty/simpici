@@ -588,8 +588,9 @@ repository's script.
 
 ## Questions for the new project session
 
-- The repository is `simpici`, the distribution/module is `App-SimpiCI` /
-  `App::SimpiCI`, and the daemon executable remains `simpicid`.
+- The repository and distribution are `simpici` / `SimpiCI`; core classes use
+  `SimpiCI::*`, application entry points use `SimpiCI::App::*`, and the daemon
+  executable remains `simpicid`.
 - What is the precise first-poll policy?
 - Where will repositories be cloned from initially: Forgejo/src.ci, GitHub, or
   both?
@@ -602,7 +603,7 @@ repository's script.
 
 ## Current foundation
 
-The project now lives at `~/dev/simpici` and uses `App::SimpiCI` as its Perl
+The project now lives at `~/dev/simpici` and uses `SimpiCI` as its Perl
 namespace. Distribution metadata, the normalized event boundary and its first
 tests exist. Claude Code and Codex each have a SimpiCI worker; their shared
 Getty Perl/Git skills are linked with `manage-skills`, while the project-owned

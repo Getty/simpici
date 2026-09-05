@@ -1,6 +1,6 @@
 # Build artifacts
-App-SimpiCI-*/
-App-SimpiCI-*.tar.gz
+SimpiCI-*/
+SimpiCI-*.tar.gz
 .build/
 
 # Test coverage and local dependencies
