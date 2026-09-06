@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 readonly phases=(prepare build test package publish deploy)
-workspace="${GITHUB_WORKSPACE:-${FORGEJO_WORKSPACE:-$PWD}}"
-action_temp="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/simpici-${GITHUB_RUN_ID:-${FORGEJO_RUN_ID:-$$}}"
+workspace="${CICD_WORKSPACE:-${GITHUB_WORKSPACE:-${FORGEJO_WORKSPACE:-$PWD}}}"
+action_temp="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/simpici.XXXXXXXX")"
 event_host="$action_temp/event.json"
 mkdir -p "$action_temp/outputs" "$action_temp/artifacts"
+cleanup_containers() {
+  local cidfile
+  for cidfile in "$action_temp"/*.cid; do
+    [[ -f "$cidfile" ]] || continue
+    docker rm -f "$(cat "$cidfile")" >/dev/null 2>&1 || true
+  done
+}
+trap cleanup_containers EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 phase_rank() {
   case "$1" in
@@ -45,6 +56,10 @@ resolve_image() {
 parse_script() {
   local script="$1" basename stem phase_job phase job expression image rank
   basename="${script##*/}"
+  [[ ! -L "$script" && "$basename" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.+-]*\.sh$ && "$basename" != *..* ]] || {
+    printf 'SimpiCI: unsafe script name: %s\n' "$basename" >&2
+    return 64
+  }
   stem="${basename%.sh}"
   [[ "$stem" == *+* ]] || {
     printf 'SimpiCI: invalid top-level script name: %s\n' "$basename" >&2
@@ -131,9 +146,12 @@ run_job() {
   if [[ "$phase" == publish || "$phase" == deploy ]]; then
     environment+=(
       -e "CICD_REGISTRY=${CICD_REGISTRY:-}" -e "CICD_REGISTRY_USER=${CICD_REGISTRY_USER:-}"
-      -e "CICD_REGISTRY_PASSWORD=${CICD_REGISTRY_PASSWORD:-}"
+      -e CICD_REGISTRY_PASSWORD
       -e "CICD_PUBLISH_IMAGE=${CICD_PUBLISH_IMAGE:-false}"
     )
+    if [[ -n "${SIMPICI_SECRETS_DIR:-}" && -f "$SIMPICI_SECRETS_DIR/$phase.env" ]]; then
+      environment+=( --env-file "$SIMPICI_SECRETS_DIR/$phase.env" )
+    fi
   fi
   local -a mounts=(
     -v "$workspace:/workspace:ro" -v "$event_host:/run/simpici/event.json:ro"
@@ -152,7 +170,7 @@ run_job() {
     environment+=( -e DOCKER_HOST=unix:///var/run/docker.sock )
   fi
   printf 'SimpiCI: %s/%s using %s\n' "$phase" "$job" "$image"
-  docker run --rm --workdir /workspace "${mounts[@]}" "${environment[@]}" \
+  docker run --rm --cidfile "$action_temp/$phase.$job.cid" --workdir /workspace "${mounts[@]}" "${environment[@]}" \
     "$image" "/workspace/.cicd/$basename" /run/simpici/event.json
 }
 

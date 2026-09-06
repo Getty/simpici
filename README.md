@@ -211,3 +211,13 @@ workflow.
 
 Copyright 2026 Torsten Raudssus. SimpiCI is available under the same terms as
 Perl itself.
+
+## Distributed dispatcher and runner
+
+For an isolated build host, set `mode: dispatcher` in the daemon configuration.
+The daemon persists deduplicated jobs; `simpici-worker` pulls them through a
+restricted outbound SSH connection and executes the shared container phases.
+See [deployment instructions](deploy/README.md) and
+[example configuration](etc/simpici.dispatcher.example.json) for worker keys,
+VM network isolation, scoped secret files, mirrors and recovery semantics.
+Windows/native jobs are not part of this execution model.

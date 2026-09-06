@@ -1,0 +1,21 @@
+[Unit]
+Description=SimpiCI dispatcher poller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=simpici
+Group=simpici
+UMask=0077
+StateDirectory=simpici
+ExecStart=/usr/local/bin/simpicid --config /etc/simpici/dispatcher.json
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/simpici
+
+[Install]
+WantedBy=multi-user.target

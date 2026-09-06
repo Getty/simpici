@@ -10,6 +10,7 @@ use JSON::MaybeXS;
 use Path::Tiny qw( path );
 use Pod::Usage qw( pod2usage );
 use SimpiCI::Runner;
+use SimpiCI::Queue;
 use SimpiCI::Source::GitPoll;
 use SimpiCI::Store;
 
@@ -30,6 +31,7 @@ sub run {
   pod2usage(-input => __FILE__, -exitval => 64, -verbose => 1,
     -message => 'A configuration file is required.') unless $config_path;
 
+  umask 0077;
   my $config = JSON::MaybeXS->new->decode(path($config_path)->slurp_utf8);
   my $store = SimpiCI::Store->new(root => path($config->{root} // './var'));
   my $configured_runner = $runner_script // $config->{runner};
@@ -38,6 +40,8 @@ sub run {
     timeout => $config->{timeout} // 3600,
     $configured_runner ? (runner_script => path($configured_runner)) : ()
   );
+
+  $runner = SimpiCI::Queue->new(store => $store) if ($config->{mode} // 'local') eq 'dispatcher';
 
   while (1) {
     for my $repository ($config->{repositories}->@*) {

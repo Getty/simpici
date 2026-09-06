@@ -1,0 +1,52 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+
+# PODNAME: simpici-worker
+# ABSTRACT: Pull exact-revision jobs over an outbound SSH connection
+
+use Carp qw( croak );
+use Fcntl qw( LOCK_EX LOCK_NB );
+use Getopt::Long qw( GetOptions );
+use Path::Tiny qw( path );
+use SimpiCI::Runner;
+use SimpiCI::Store;
+use SimpiCI::Worker;
+
+umask 0077;
+my ($host, $root, $once, $executor);
+my $timeout = 3600;
+GetOptions('dispatcher=s' => \$host, 'root=s' => \$root, 'once' => \$once,
+  'executor=s' => \$executor, 'timeout=i' => \$timeout)
+  && $host && $root or croak 'Usage: simpici-worker --dispatcher USER@HOST --root DIR [--once]';
+my $store = SimpiCI::Store->new(root => path($root))->prepare;
+my $lock = $store->root->child('worker.lock')->opena_raw;
+flock($lock, LOCK_EX | LOCK_NB) or croak 'simpici-worker already running';
+my $worker = SimpiCI::Worker->new(
+  host => $host, store => $store,
+  runner => SimpiCI::Runner->new(store => $store, timeout => $timeout,
+    $executor ? (runner_script => path($executor)) : ())
+);
+while (1) {
+  eval { $worker->once; 1 } or warn 'simpici-worker: '.$@;
+  last if $once;
+  sleep 10;
+}
+
+=head1 NAME
+
+simpici-worker - outbound-only SimpiCI worker
+
+=head1 SYNOPSIS
+
+  simpici-worker --dispatcher simpici@ci.example --root /var/lib/simpici-worker
+
+=head1 DESCRIPTION
+
+Runs the shared container executor on exact detached checkouts. Install the
+SSH host key ahead of time. The remote account must force simpici-dispatch
+with a fixed config and worker identity and disable all SSH forwarding.
+A local lock prevents overlapping worker processes. Completed work is saved
+before upload and retried without rebuilding when the connection fails.
+
+=cut

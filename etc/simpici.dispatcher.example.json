@@ -1,0 +1,30 @@
+{
+  "mode": "dispatcher",
+  "root": "/var/lib/simpici",
+  "interval": 60,
+  "timeout": 3600,
+  "repositories": [
+    {
+      "name": "Getty/simpici",
+      "clone_url": "https://github.com/Getty/simpici.git",
+      "refs": ["refs/heads/main", "refs/tags/*"],
+      "build_initial": false,
+      "secrets": [
+        {
+          "name": "CICD_REGISTRY_PASSWORD",
+          "file": "/etc/simpici/secrets/registry-password",
+          "refs": ["refs/heads/main"],
+          "events": ["push"],
+          "sources": ["git-poll"],
+          "phases": ["publish"]
+        }
+      ]
+    },
+    {
+      "name": "Getty/simpici",
+      "clone_url": "https://src.ci/cindustries/simpici.git",
+      "refs": ["refs/heads/main", "refs/tags/*"],
+      "build_initial": false
+    }
+  ]
+}

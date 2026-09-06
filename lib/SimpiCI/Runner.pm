@@ -42,9 +42,12 @@ sub _build_runner_script {
 }
 
 sub run {
-  my ( $self, $event ) = @_;
+  my ( $self, $event, $assigned_run ) = @_;
 
-  my $run = $self->store->allocate_run;
+  croak __PACKAGE__.' invalid assigned run'
+    if defined $assigned_run && $assigned_run !~ /\A[1-9][0-9]*\z/;
+  $self->store->prepare;
+  my $run = $assigned_run // $self->store->allocate_run;
   my $state_root = $self->store->root->absolute;
   my $workspace = $state_root->child('work', $run);
   my $log = $state_root->child('public', 'runs', $run.'.log');

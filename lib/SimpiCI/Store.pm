@@ -5,7 +5,7 @@ use Moo;
 # ABSTRACT: Private filesystem persistence for SimpiCI
 
 use Carp qw( croak );
-use Fcntl qw( LOCK_EX SEEK_SET );
+use Fcntl qw( LOCK_EX );
 use JSON::MaybeXS;
 use Path::Tiny qw( path );
 use Types::Standard qw( InstanceOf );
@@ -36,26 +36,19 @@ sub allocate_run {
 
   $self->prepare;
   my $counter = $self->root->child('counter');
-  $counter->touch unless $counter->exists;
-  my $fh = $counter->openrw_raw;
+  my $fh = $self->root->child('counter.lock')->opena_raw;
   flock($fh, LOCK_EX)
-    or croak __PACKAGE__.'->allocate_run cannot lock '.$counter.': '.$!;
-  seek($fh, 0, SEEK_SET)
-    or croak __PACKAGE__.'->allocate_run cannot seek '.$counter.': '.$!;
-  my $current = <$fh> // 0;
+    or croak __PACKAGE__.'->allocate_run cannot lock counter: '.$!;
+  my $current = $counter->is_file ? $counter->slurp_utf8 : 0;
   chomp $current;
   croak __PACKAGE__.'->allocate_run invalid counter' unless $current =~ /\A\d+\z/;
   my $next = $current + 1;
-  seek($fh, 0, SEEK_SET)
-    or croak __PACKAGE__.'->allocate_run cannot rewind '.$counter.': '.$!;
-  truncate($fh, 0)
-    or croak __PACKAGE__.'->allocate_run cannot truncate '.$counter.': '.$!;
-  print {$fh} $next."\n"
-    or croak __PACKAGE__.'->allocate_run cannot write '.$counter.': '.$!;
-  $fh->sync
-    or croak __PACKAGE__.'->allocate_run cannot sync '.$counter.': '.$!;
-  close $fh
-    or croak __PACKAGE__.'->allocate_run cannot close '.$counter.': '.$!;
+  my $temporary = $counter->sibling('.counter.tmp.'.$$);
+  my $output = $temporary->openw_raw;
+  print {$output} $next."\n" or croak __PACKAGE__.' cannot write counter: '.$!;
+  $output->sync or croak __PACKAGE__.' cannot sync counter: '.$!;
+  close $output or croak __PACKAGE__.' cannot close counter: '.$!;
+  $temporary->move($counter);
   return $next;
 }
 

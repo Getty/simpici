@@ -1,0 +1,49 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+
+# PODNAME: simpici-dispatch
+# ABSTRACT: Serve one restricted worker request over SSH standard input
+
+use Carp qw( croak );
+use Getopt::Long qw( GetOptions );
+use JSON::MaybeXS;
+use Path::Tiny qw( path );
+use SimpiCI::Dispatcher;
+use SimpiCI::Queue;
+use SimpiCI::Store;
+
+umask 0077;
+my ($config_path, $worker);
+GetOptions('config=s' => \$config_path, 'worker=s' => \$worker)
+  && $config_path && $worker or croak 'Usage: simpici-dispatch --config FILE --worker NAME';
+my $config = JSON::MaybeXS->new->decode(path($config_path)->slurp_utf8);
+my $input = '';
+alarm 30;
+while (read(STDIN, my $chunk, 65536)) {
+  $input .= $chunk;
+  croak 'simpici-dispatch request too large' if length($input) > 8 * 1024 * 1024;
+}
+my $queue = SimpiCI::Queue->new(
+  store => SimpiCI::Store->new(root => path($config->{root})),
+  lease_seconds => ($config->{timeout} // 3600) + 1800
+);
+my $response = SimpiCI::Dispatcher->new(queue => $queue, config => $config)
+  ->request($worker, JSON::MaybeXS->new->decode($input));
+print JSON::MaybeXS->new(canonical => 1, convert_blessed => 1)->encode($response);
+
+=head1 NAME
+
+simpici-dispatch - restricted SSH dispatcher endpoint
+
+=head1 SYNOPSIS
+
+  simpici-dispatch --config /etc/simpici/dispatcher.json --worker vm1
+
+=head1 DESCRIPTION
+
+Install as an SSH forced command with restrict and no forwarding. Accepts one
+size-limited JSON claim or finish request on standard input. The dispatcher
+never checks out or executes repository code. Use a dedicated account.
+
+=cut

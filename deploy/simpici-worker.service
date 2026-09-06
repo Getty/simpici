@@ -1,0 +1,24 @@
+[Unit]
+Description=SimpiCI isolated outbound runner
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=simpici-worker
+Group=simpici-worker
+SupplementaryGroups=docker
+UMask=0077
+StateDirectory=simpici-worker
+EnvironmentFile=/etc/simpici/worker.env
+ExecStart=/usr/local/bin/simpici-worker --dispatcher ${SIMPICI_DISPATCHER} --root /var/lib/simpici-worker
+Restart=on-failure
+RestartSec=10
+KillMode=control-group
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/simpici-worker
+
+[Install]
+WantedBy=multi-user.target

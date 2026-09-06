@@ -1,8 +1,12 @@
 {{$NEXT}}
   - Introduce the SimpiCI distribution with normalized events, exact detached
     checkouts, filesystem state and sanitized static JSON/log reports.
-  - Poll configured Git refs persistently with an explicit initial-build
-    policy.
+  - Poll GitHub and Forgejo mirrors with independent observations and shared
+    run deduplication, including newly appearing refs after initial polling.
+  - Dispatch durable leased jobs to outbound SSH workers, with fenced recovery
+    and idempotent completion upload through a restricted worker protocol.
+  - Scope dispatcher secret files to repositories, refs, events and publish or
+    deploy phases; redact uploaded logs and keep values out of command lines.
   - Discover repository jobs from their filenames, execute them in selected
     containers and enforce ordered phase barriers with same-phase concurrency.
   - Provide a reusable GitHub/Forgejo action and GitHub workflow for the same

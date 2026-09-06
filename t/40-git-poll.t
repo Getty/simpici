@@ -4,6 +4,7 @@ use warnings;
 use Test2::V0;
 
 use SimpiCI::Runner;
+use SimpiCI::Queue;
 use SimpiCI::Source::GitPoll;
 use SimpiCI::Store;
 use File::Temp qw( tempdir );
@@ -54,5 +55,24 @@ my $poller = SimpiCI::Source::GitPoll->new(
 
 is scalar($poller->poll->@*), 1, 'initial policy can build current tip';
 is scalar($poller->poll->@*), 0, 'unchanged ref creates no duplicate run';
+
+my $queue_store = SimpiCI::Store->new(root => path(tempdir(CLEANUP => 1)));
+my $queue = SimpiCI::Queue->new(store => $queue_store);
+my %repository = (name => 'owner/fixture', clone_url => "$fixture",
+  refs => ['refs/heads/main', 'refs/tags/*'], build_initial => 0);
+my $queued_poller = SimpiCI::Source::GitPoll->new(
+  store => $queue_store, runner => $queue, repository => { %repository });
+is $queued_poller->poll, [], 'initial observation does not enqueue history';
+system('git', '-C', "$fixture", 'tag', 'new-tag') == 0 or die 'tag failed';
+is scalar($queued_poller->poll->@*), 1, 'new tag builds after initial observation';
+my $mirror_poller = SimpiCI::Source::GitPoll->new(
+  store => $queue_store, runner => $queue, repository => {
+    %repository, clone_url => "$fixture/.", build_initial => 1
+  });
+my $mirror_reports = $mirror_poller->poll;
+is scalar(@$mirror_reports), 2, 'mirror has independent observations';
+is [sort map { $_->{run} } @$mirror_reports], [1, 2],
+  'same tag through second clone URL reuses existing run';
+is $mirror_poller->poll, [], 'mirror polling stays idle when unchanged';
 
 done_testing;

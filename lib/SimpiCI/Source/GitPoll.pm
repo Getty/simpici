@@ -5,6 +5,7 @@ use Moo;
 # ABSTRACT: Poll configured Git refs for SimpiCI
 
 use SimpiCI::Event;
+use Digest::SHA qw( sha256_hex );
 use SimpiCI::Runner;
 use SimpiCI::Store;
 use Carp qw( croak );
@@ -12,7 +13,7 @@ use IPC::Open3 qw( open3 );
 use JSON::MaybeXS;
 use Path::Tiny qw( path );
 use Symbol qw( gensym );
-use Types::Standard qw( HashRef InstanceOf );
+use Types::Standard qw( HashRef InstanceOf Object );
 use namespace::autoclean;
 
 has store => (
@@ -23,7 +24,7 @@ has store => (
 
 has runner => (
   is       => 'ro',
-  isa      => InstanceOf['SimpiCI::Runner'],
+  isa      => Object,
   required => 1,
 );
 
@@ -37,8 +38,9 @@ sub poll {
   my ( $self ) = @_;
 
   my $repository = $self->repository;
+  my $identity = sha256_hex(join "\0", $repository->{name}, $repository->{clone_url});
   my $state_path = $self->store->root->child(
-    'state', 'repositories', $repository->{name}.'.json'
+    'state', 'repositories', $identity.'.json'
   );
   my $previous = $state_path->is_file
     ? JSON::MaybeXS->new->decode($state_path->slurp_utf8) : {};
@@ -49,7 +51,7 @@ sub poll {
     my $commit = $observed->{$ref};
     my $old = $previous->{$ref};
     next if defined $old && $old eq $commit;
-    next unless defined $old || $repository->{build_initial};
+    next unless defined $old || $state_path->is_file || $repository->{build_initial};
     push @reports, $self->runner->run(SimpiCI::Event->new(
       source     => 'git-poll',
       event      => 'push',
@@ -60,7 +62,7 @@ sub poll {
     ));
   }
   $self->store->write_json(
-    'state/repositories/'.$repository->{name}.'.json', $observed
+    'state/repositories/'.$identity.'.json', $observed
   );
   return \@reports;
 }
@@ -72,7 +74,7 @@ sub _ls_remote {
   my @refs = $repository->{refs}->@*;
   my $stderr = gensym;
   my $pid = open3(undef, my $stdout, $stderr,
-    'git', 'ls-remote', $repository->{clone_url}, @refs);
+    'git', 'ls-remote', '--', $repository->{clone_url}, @refs);
   my $output = do { local $/; <$stdout> // '' };
   my $error = do { local $/; <$stderr> // '' };
   waitpid($pid, 0);
@@ -81,7 +83,11 @@ sub _ls_remote {
   for my $line (split /\n/, $output) {
     my ( $commit, $ref ) = split /\s+/, $line, 2;
     next unless defined $ref && $commit =~ /\A[0-9a-f]{40}(?:[0-9a-f]{24})?\z/;
-    $observed{$ref} = $commit;
+    if ($ref =~ s/\^\{\}\z//) {
+      $observed{$ref} = $commit;
+    } else {
+      $observed{$ref} //= $commit;
+    }
   }
   return \%observed;
 }

@@ -42,6 +42,12 @@ sub BUILD {
     unless $self->commit =~ /\A[0-9a-f]{40}(?:[0-9a-f]{24})?\z/;
   croak __PACKAGE__.' ref must start with refs/'
     unless $self->ref =~ /\Arefs\//;
+  croak __PACKAGE__.' ref is not canonical'
+    if $self->ref =~ /[\x00-\x20\x7f~^:?*\[\\]/
+      || $self->ref =~ /\.\.|@\{|\/\/|\/\.|\.lock(?:\/|$)|[.\/]$/;
+  croak __PACKAGE__.' clone URL must not contain credentials or control characters'
+    if $self->clone_url =~ /[\x00-\x20\x7f]/
+      || $self->clone_url =~ m{\Ahttps?://[^/]*@}i;
   croak __PACKAGE__.' repository must not contain NUL'
     if $self->repository =~ /\0/;
 }
