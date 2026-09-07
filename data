@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-09-07T13:31:45Z
+created: 2026-09-04T04:49:28Z
+id: 1
+priority: high
+started: 2026-09-06T03:41:19Z
+status: done
+tags:
+- architecture
+- dispatcher
+title: 'Dispatcher/Runner-Split: verteilte Ausfuehrung (simpicid dispatcht, isolierter
+  Runner fuehrt aus)'
+updated: 2026-09-07T13:31:45Z
+---
+
+Bewusste Erweiterung des heutigen Single-Daemon-Modells -- simpici-core sagt ausdruecklich: kein distributed scheduling ohne explizite Entscheidung; die wird hier getroffen. simpicid laeuft als Dispatcher auf dem src.ci-Server: haelt Config, Queue und Secrets, macht Polling/Dedup und vergibt Runs. Ein separater Runner-Prozess auf einer eigenen, netzwerk-isolierten Maschine holt den Run, macht den exakten detached Checkout und fuehrt genau ein repo-eigenes Script aus. Grund: der Build-Host darf keinen Zugriff aufs interne Netz haben (kompromittierter Build bleibt eingesperrt), waehrend der Dispatcher im vertrauenswuerdigen Bereich bleibt. Queue- und Claim-Recovery muessen den entfernten Runner beruecksichtigen. Bezug: TODO.md Runner-Isolation. Grundlage fuer den Runner-Deploy und das Secrets-Modell.
+
+Umgesetzt in lokalem Commit 6ef93b2. Dispatcher mit persistenter deduplizierter Queue, isolierter Pull-Worker via SSH Forced Command, ablaufende Claims ohne automatischen Publish-Replay, idempotenter Ergebnis-Upload; Secrets aus privaten Dateien mit Repo/Clone-URL/Ref/Event/Source/Phasen-Scope und Log-Redaktion. GitHub/Forgejo nutzen getrennte Poll-Beobachtungen und gemeinsamen Dedup-Key repository/ref/commit; fuer unabhaengige Runs getrennte logische Repo-Namen verwenden, keine platform/feature-Felder. Action und Worker nutzen denselben Phasen-Executor. Validiert: prove -lr t/ (69 Tests), dzil test (83 Tests), Prozess-Protokolltest und simulierte Upload-Unterbrechung. Echter VM-Betrieb bleibt k4; der Transport liefert finale Logs/Status, Artefakte bleiben auf dem Worker.
