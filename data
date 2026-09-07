@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-09-07T13:31:45Z
+created: 2026-09-04T04:49:33Z
+id: 2
+priority: high
+started: 2026-09-06T03:41:19Z
+status: done
+tags:
+- secrets
+- security
+title: SECRETS pro Repo in der Dispatcher-Config (intern, nie im Report-Baum, gescopte
+  Uebergabe an den Run)
+updated: 2026-09-07T13:31:45Z
+---
+
+Beim Eintragen eines Repos in die Dispatcher-Config kann man SECRETS mitgeben (z.B. Forgejo-Push-Token, Registry-Token). Sie bleiben ausschliesslich intern auf dem Dispatcher/simpicid, landen nie im public report tree (simpici-core: credentials never enter the public report tree) und werden dem Run nur als kontrollierte Environment-Variablen oder Dateien gereicht, nicht per command-line. Pro Repo, Platform und Feature scopebar, damit ein untrusted Fork keine Publish-Secrets sieht. Enge Token-Rechte (nur Push in eine Registry). Bezug: TODO offene Frage -- welche Events duerfen Registry- und Deployment-Credentials bekommen.
+
+Umgesetzt in lokalem Commit 6ef93b2. Dispatcher mit persistenter deduplizierter Queue, isolierter Pull-Worker via SSH Forced Command, ablaufende Claims ohne automatischen Publish-Replay, idempotenter Ergebnis-Upload; Secrets aus privaten Dateien mit Repo/Clone-URL/Ref/Event/Source/Phasen-Scope und Log-Redaktion. GitHub/Forgejo nutzen getrennte Poll-Beobachtungen und gemeinsamen Dedup-Key repository/ref/commit; fuer unabhaengige Runs getrennte logische Repo-Namen verwenden, keine platform/feature-Felder. Action und Worker nutzen denselben Phasen-Executor. Validiert: prove -lr t/ (69 Tests), dzil test (83 Tests), Prozess-Protokolltest und simulierte Upload-Unterbrechung. Echter VM-Betrieb bleibt k4; der Transport liefert finale Logs/Status, Artefakte bleiben auf dem Worker.
