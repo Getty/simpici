@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-09-07T13:31:45Z
+created: 2026-09-04T04:49:46Z
+id: 5
+priority: low
+started: 2026-09-06T03:41:19Z
+status: done
+tags:
+- github
+title: 'GitHub-Action-Adapter: dasselbe repo-eigene Script aus einer Action aufrufen'
+updated: 2026-09-07T13:31:45Z
+---
+
+Optional: eine GitHub Action, die exakt dasselbe repo-eigene .cicd-Script aufruft, statt die Build-Logik zu duplizieren (Logik lebt an einer Stelle, unabhaengig von GitHub oder Forgejo). GitHub liefert seine Secrets nativ (Action-Secrets), simpici auf src.ci liefert sie aus der Dispatcher-Config -- beide Wege, ein Script.
+
+Getty macht den GitHub-Workflow separat mit einem Plugin (nicht in diesem Repo-Script). Das repo-eigene .cicd-Script fuer den simpicid-Runner ist bei kubernetes-ocp k134 bereits umgesetzt und ruft dieselbe Build-Logik; ein Action-Adapter muesste nur exakt dieses Script aufrufen.
+
+Umgesetzt in lokalem Commit 6ef93b2. Dispatcher mit persistenter deduplizierter Queue, isolierter Pull-Worker via SSH Forced Command, ablaufende Claims ohne automatischen Publish-Replay, idempotenter Ergebnis-Upload; Secrets aus privaten Dateien mit Repo/Clone-URL/Ref/Event/Source/Phasen-Scope und Log-Redaktion. GitHub/Forgejo nutzen getrennte Poll-Beobachtungen und gemeinsamen Dedup-Key repository/ref/commit; fuer unabhaengige Runs getrennte logische Repo-Namen verwenden, keine platform/feature-Felder. Action und Worker nutzen denselben Phasen-Executor. Validiert: prove -lr t/ (69 Tests), dzil test (83 Tests), Prozess-Protokolltest und simulierte Upload-Unterbrechung. Echter VM-Betrieb bleibt k4; der Transport liefert finale Logs/Status, Artefakte bleiben auf dem Worker.
