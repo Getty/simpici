@@ -1,0 +1,17 @@
+---
+class: standard
+completed: 2026-09-07T13:31:45Z
+created: 2026-09-04T04:49:37Z
+id: 3
+priority: medium
+started: 2026-09-06T03:41:19Z
+status: done
+tags:
+- polling
+title: 'GitHub und Forgejo pollen: getrennte Quellen, gemeinsame Repository-Deduplizierung'
+updated: 2026-09-07T13:32:14Z
+---
+
+Dispatcher pollt dasselbe Repo aus zwei Quellen -- GitHub und Forgejo auf src.ci -- und dedupliziert ueber das platform-Feld des Dedup-Keys (repository NUL ref NUL commit NUL platform NUL feature), sodass derselbe Commit auf beiden Plattformen sauber getrennt gefuehrt wird. Setzt voraus, dass das Repo auf src.ci (Forgejo) angelegt ist. Bezug: TODO offene Frage -- woher wird geklont: Forgejo/src.ci, GitHub, oder gespiegelt.
+
+Umgesetzt in lokalem Commit 6ef93b2. Dispatcher mit persistenter deduplizierter Queue, isolierter Pull-Worker via SSH Forced Command, ablaufende Claims ohne automatischen Publish-Replay, idempotenter Ergebnis-Upload; Secrets aus privaten Dateien mit Repo/Clone-URL/Ref/Event/Source/Phasen-Scope und Log-Redaktion. GitHub/Forgejo nutzen getrennte Poll-Beobachtungen und gemeinsamen Dedup-Key repository/ref/commit; fuer unabhaengige Runs getrennte logische Repo-Namen verwenden, keine platform/feature-Felder. Action und Worker nutzen denselben Phasen-Executor. Validiert: prove -lr t/ (69 Tests), dzil test (83 Tests), Prozess-Protokolltest und simulierte Upload-Unterbrechung. Echter VM-Betrieb bleibt k4; der Transport liefert finale Logs/Status, Artefakte bleiben auf dem Worker.
