@@ -1,0 +1,19 @@
+---
+block_reason: VM-Hostname/IP, SSH-Benutzer und Dispatcher-Ziel fehlen; reale Netzisolation
+  und Deployment noch nicht pruefbar.
+blocked: true
+class: standard
+created: 2026-09-04T04:49:42Z
+id: 4
+priority: medium
+status: backlog
+tags:
+- infra
+- runner
+title: Runner auf der netzwerk-isolierten VMware-VM deployen (Outbound-only, Build-Isolation)
+updated: 2026-09-07T13:32:06Z
+---
+
+Die bereitgestellte VMware-Kiste als permanenten Runner einrichten: kein Zugriff aufs interne Netz, nur Outbound ins Internet (GitHub, src.ci, Registries). Isolierter Build-User und Container- bzw. VM-Isolation fuer den Build. Docker/Podman fuer den Image-Build. Empfaengt Runs und gescopte Secrets vom Dispatcher. Bezug: TODO offene Frage -- welche Maschine, welche Isolation; hiermit beantwortet.
+
+Deployment vorbereitet in lokalem Commit 6ef93b2: deploy/simpicid.service, deploy/simpici-worker.service, deploy/README.md und etc/simpici.dispatcher.example.json. Anleitung fuer dedizierte Konten, SSH Forced Command, ausgehende Worker-Verbindung, externe IPv4/IPv6-Isolation und Recovery. Noch kein Dienst auf einer VMware-VM installiert. Rueckfrage nach VM-/Dispatcher-Zugang gestellt; k4 bleibt bis Installation und realem Isolationstest offen.
