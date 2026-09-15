@@ -79,24 +79,6 @@ parse_script() {
   printf '%s\t%s\t%s\t%s\t%s\n' "$rank" "$phase" "$image" "$job" "$basename"
 }
 
-shopt -s nullglob
-scripts=("$workspace/.cicd/"*.sh)
-shopt -u nullglob
-(( ${#scripts[@]} > 0 )) || {
-  printf 'SimpiCI: no top-level .cicd/*.sh scripts found\n' >&2
-  exit 127
-}
-plan="$action_temp/plan"
-: >"$plan"
-for script in "${scripts[@]}"; do parse_script "$script" >>"$plan"; done
-sort -o "$plan" "$plan"
-duplicates="$(cut -f2,4 "$plan" | sort | uniq -d)"
-[[ -z "$duplicates" ]] || {
-  printf 'SimpiCI: duplicate phase/job names:\n%s\n' "$duplicates" >&2
-  exit 64
-}
-if [[ "${SIMPICI_PLAN_ONLY:-false}" == true ]]; then cat "$plan"; exit 0; fi
-
 source_name=github-actions
 [[ -n "${FORGEJO_ACTIONS:-}" || -n "${FORGEJO_SERVER_URL:-}" ]] && source_name=forgejo-actions
 export CICD_RUN_NUMBER="${CICD_RUN_NUMBER:-${GITHUB_RUN_NUMBER:-${FORGEJO_RUN_NUMBER:-0}}}"
@@ -128,6 +110,62 @@ umask 077
   printf '}\n'
 } >"$event_host"
 
+# Build the effective .cicd in a writable staging directory: the repository's
+# own top-level jobs first, then whatever providers contribute. The checkout
+# stays read-only, and a repository need not ship a .cicd at all when a provider
+# supplies its jobs.
+staging="$action_temp/cicd"
+mkdir -p "$staging"
+if [[ -d "$workspace/.cicd" ]]; then
+  cp -rp "$workspace/.cicd/." "$staging/"
+fi
+
+# Providers are pinned, org-owned images that generate additional .sh job files.
+# Each runs once with the checkout read-only and its own private writable output
+# directory; it never receives registry credentials or the Docker socket. Output
+# is merged into staging WITHOUT overwriting existing names, so the repository's
+# own jobs -- and then earlier providers -- always win a name collision.
+providers=()
+[[ -n "${SIMPICI_PROVIDERS:-}" ]] && read -r -a providers <<<"$SIMPICI_PROVIDERS"
+provider_index=0
+for provider_image in "${providers[@]}"; do
+  [[ -n "$provider_image" ]] || continue
+  provider_out="$action_temp/provider.$provider_index"
+  mkdir -p "$provider_out"
+  printf 'SimpiCI: provider %s\n' "$provider_image" >&2
+  docker run --rm --cidfile "$action_temp/provider.$provider_index.cid" \
+    --workdir /workspace \
+    -v "$workspace:/workspace:ro" -v "$event_host:/run/simpici/event.json:ro" \
+    -v "$provider_out:/cicd-out" \
+    -e CICD_PROVIDER_OUT=/cicd-out \
+    -e CICD_WORKSPACE=/workspace -e CICD_EVENT_FILE=/run/simpici/event.json \
+    -e "CICD_SOURCE=$CICD_SOURCE" -e "CICD_EVENT=$CICD_EVENT" \
+    -e "CICD_REPOSITORY=$CICD_REPOSITORY" -e "CICD_REF=$CICD_REF" \
+    -e "CICD_BRANCH=$CICD_BRANCH" -e "CICD_TAG=$CICD_TAG" \
+    -e "CICD_COMMIT=$CICD_COMMIT" \
+    "$provider_image" /run/simpici/event.json
+  cp -rpn "$provider_out/." "$staging/"
+  provider_index=$((provider_index + 1))
+done
+
+shopt -s nullglob
+scripts=("$staging/"*.sh)
+shopt -u nullglob
+(( ${#scripts[@]} > 0 )) || {
+  printf 'SimpiCI: no .cicd/*.sh jobs from the checkout or any provider\n' >&2
+  exit 127
+}
+plan="$action_temp/plan"
+: >"$plan"
+for script in "${scripts[@]}"; do parse_script "$script" >>"$plan"; done
+sort -o "$plan" "$plan"
+duplicates="$(cut -f2,4 "$plan" | sort | uniq -d)"
+[[ -z "$duplicates" ]] || {
+  printf 'SimpiCI: duplicate phase/job names:\n%s\n' "$duplicates" >&2
+  exit 64
+}
+if [[ "${SIMPICI_PLAN_ONLY:-false}" == true ]]; then cat "$plan"; exit 0; fi
+
 run_job() {
   local phase="$1" image="$2" job="$3" basename="$4"
   local output_host="$action_temp/outputs/$phase/$job"
@@ -141,7 +179,7 @@ run_job() {
     -e "CICD_COMMIT=$CICD_COMMIT" -e "CICD_PHASE=$phase" -e "CICD_JOB=$job"
     -e "CICD_IMAGE_REF=$image" -e "CICD_IMAGE_REPOSITORY=${CICD_IMAGE_REPOSITORY:-}"
     -e CICD_WORKSPACE=/workspace -e CICD_EVENT_FILE=/run/simpici/event.json
-    -e CICD_ROOT=/workspace/.cicd -e CICD_OUTPUT=/output -e CICD_ARTIFACTS=/artifacts
+    -e CICD_ROOT=/cicd -e CICD_OUTPUT=/output -e CICD_ARTIFACTS=/artifacts
   )
   if [[ "$phase" == publish || "$phase" == deploy ]]; then
     environment+=(
@@ -154,7 +192,8 @@ run_job() {
     fi
   fi
   local -a mounts=(
-    -v "$workspace:/workspace:ro" -v "$event_host:/run/simpici/event.json:ro"
+    -v "$workspace:/workspace:ro" -v "$staging:/cicd:ro"
+    -v "$event_host:/run/simpici/event.json:ro"
     -v "$output_host:/output" -v "$artifacts_host:/artifacts"
   )
   local docker_socket=/var/run/docker.sock
@@ -171,7 +210,7 @@ run_job() {
   fi
   printf 'SimpiCI: %s/%s using %s\n' "$phase" "$job" "$image"
   docker run --rm --cidfile "$action_temp/$phase.$job.cid" --workdir /workspace "${mounts[@]}" "${environment[@]}" \
-    "$image" "/workspace/.cicd/$basename" /run/simpici/event.json
+    "$image" "/cicd/$basename" /run/simpici/event.json
 }
 
 for phase in "${phases[@]}"; do

@@ -2,7 +2,22 @@ name: SimpiCI
 
 on:
   workflow_call:
+    inputs:
+      provider:
+        description: >-
+          Whitespace-separated list of pinned, org-owned provider image refs.
+          Each is run once to generate additional .cicd job files; the
+          repository's own .cicd jobs win any name collision.
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
+    inputs:
+      provider:
+        description: Whitespace-separated pinned provider image refs
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -20,3 +35,4 @@ jobs:
           CICD_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           CICD_IMAGE_REPOSITORY: ghcr.io/${{ github.repository }}
           CICD_PUBLISH_IMAGE: ${{ github.event_name != 'pull_request' }}
+          SIMPICI_PROVIDERS: ${{ inputs.provider }}

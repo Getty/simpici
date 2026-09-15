@@ -9,6 +9,12 @@
     deploy phases; redact uploaded logs and keep values out of command lines.
   - Discover repository jobs from their filenames, execute them in selected
     containers and enforce ordered phase barriers with same-phase concurrency.
+  - Merge repository jobs and provider-generated jobs in a writable staging
+    directory: pinned, org-owned provider images (SIMPICI_PROVIDERS, exposed as
+    the reusable workflow's "provider" input) generate additional .cicd/*.sh
+    files, and the repository's own same-named jobs always win. Providers run
+    read-only over the checkout with no registry credentials or Docker socket,
+    letting a repository ship no .cicd at all.
   - Provide a reusable GitHub/Forgejo action and GitHub workflow for the same
     zero-configuration repository-job contract used by the native daemon.
   - Add complete POD manuals and conventional help output for both command-line
