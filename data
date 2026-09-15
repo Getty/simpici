@@ -1,0 +1,123 @@
+---
+claimed_at: 2026-09-15T02:49:22Z
+claimed_by: simpici
+class: standard
+completed: 2026-09-15T02:49:22Z
+created: 2026-09-14T22:55:00Z
+id: 7
+priority: high
+started: 2026-09-15T02:16:28Z
+status: done
+tags:
+- feature
+- provider
+- cicd
+title: 'Provider-Hook: provider-generierte .cicd-Jobs via Staging-Dir mergen'
+updated: 2026-09-15T02:49:22Z
+---
+
+## Ziel
+
+Provider (org-eigene, gepinnte Programme) duerfen zusaetzliche CI-Jobs beisteuern,
+ohne dass ein Repo sie committen muss. Erster Nutzer: der [@Author::GETTY]-Bundle-
+Provider, der eine `dzil test`-Matrix ueber die unterstuetzten Perl-Versionen
+emittiert. SimpiCI bleibt generisch -- kein Perl-/dzil-Wissen im Core, kein Plugin-
+Marketplace, keine Matrix-DSL (konsistent mit TODO.md: "avoid matrices, plugins").
+Es kommen schlicht *mehr `.sh`-Dateien* aus einer zweiten Quelle.
+
+## Designprinzip
+
+Alles ist eine `.sh`-Datei mit der bestehenden Grammatik `<image>+<phase>[.<job>].sh`.
+Ob user-handgeschrieben oder provider-generiert -- identische Behandlung und identische
+`parse_script`-Sicherheitsvalidierung. **User gewinnt bei Namenskollision.**
+
+## Mechanismus (der SimpiCI-Core-Change in bin/simpici-executor)
+
+1. **Staging-Dir statt direktem /workspace/.cicd.** Der Executor legt eine
+   *schreibbare* Staging-Dir an (z.B. unter `$action_temp`), kopiert
+   `/workspace/.cicd/*.sh` hinein, laesst dann die Provider dazuschreiben, und globt
+   danach **die Staging-Dir** fuer den Plan. Heute Zeile 82-91:
+   `scripts=("$workspace/.cicd/"*.sh)` -> kuenftig aus der Staging-Dir.
+2. **Provider-Invocation.** Neuer Input `provider` (Liste, Reihenfolge signifikant) =
+   gepinnte, org-eigene Ref. Nach dem Kopieren der User-Dateien wird jeder Provider
+   einmal ausgefuehrt und schreibt `.sh`-Dateien in die Staging-Dir. **Skip-if-exists**
+   (`[ -e ] || write`): bestehende Namen (User zuerst, dann fruehere Provider) werden
+   nicht ueberschrieben.
+3. **Ausfuehrung.** `run_job` (Zeile 131-175) mountet die Skripte aus der Staging-Dir
+   (ro) statt aus `/workspace/.cicd`; `CICD_ROOT` zeigt auf die Staging-Dir.
+   `/workspace` bleibt der **read-only** Checkout wie bisher (Zeile 157). CICD_OUTPUT/
+   CICD_ARTIFACTS unveraendert schreibbar.
+4. **Validierung uniform.** `parse_script` (Zeile 56-80) laeuft auch ueber Provider-
+   Dateien -> unsichere Namen/Symlinks werden abgelehnt.
+5. **Dedupe-Regel dokumentieren.** Executor dedupliziert auf `phase/job` (Zeile 93).
+   Fuer eine Matrix OHNE Job-Suffix arbeiten: `perl+5.36+test.sh` => `job = perl+5.36`
+   (Image-Ausdruck, pro Version eindeutig). Provider muessen eindeutige Job-Namen
+   emittieren. (Ein Job-Suffix wie `test.unit` fuer alle Versionen kollidiert -> Exit 64.)
+
+## Provider-Vertrag
+
+Ein Provider ist ein **Programm, das `.sh`-Dateien (und optional `lib/`-Helfer, die der
+top-level-Glob nicht als Job aufgreift) in die Staging-Dir schreibt, ohne bestehende
+Namen zu ueberschreiben.** Empfohlene Delivery-Form: **gepinntes OCI-Image** -- laeuft
+ueber alle Quellen (GitHub Actions, Forgejo, Polling-Daemon) und passt zu SimpiCIs
+container-zentrischem Modell. SimpiCI fuehrt das Image aus, mountet die Staging-Dir
+schreibbar + /workspace ro + event.json; der Entrypoint legt die Dateien ab.
+
+## Trust / Security
+
+- Provider = **gepinnt & org-eigen** -> man fuehrt seinen eigenen Code aus, kein
+  Supply-Chain-Problem, kein third-party Marketplace.
+- Credentials bleiben wie gehabt auf `publish`/`deploy` isoliert (Zeile 146-155).
+  Provider-Jobs laufen unter derselben Container-Isolation und Namensvalidierung.
+- Doku: Orgs schreiben ihr **eigenes** Firmen-/Org-Provider-Image (bestehende Schemas:
+  was getan werden muss, wo es laufen muss). Das ist eine Skalierungsmoeglichkeit fuer
+  Power-User/Orgs, kein Feature, das jedes Programm einbaut.
+
+## Testing
+
+`t/action-runner.sh` erweitern: (a) Provider fuegt Jobs hinzu; (b) Namenskollision ->
+User-Datei gewinnt; (c) Staging-Isolation (Workspace bleibt ro, Jobs schreiben nur
+CICD_OUTPUT/ARTIFACTS); (d) Validierung lehnt unsichere Provider-Namen ab.
+
+## Non-Goals (v1)
+
+Keine Matrix-DSL, kein Plugin-Marketplace, keine per-Provider-Config-Sprache. Nur die
+datei-generierende Provider-Naht. Per-Dist-Konfiguration liegt beim jeweiligen Provider,
+nicht in SimpiCI.
+
+## Offene Entscheidungen zum Implementierungs-Kickoff
+
+1. Provider-Delivery: **gepinntes OCI-Image** (empfohlen, cross-source) vs Action-Ref
+   (GH-only Vorstufe). Empfehlung: Image.
+2. `provider` als Multi-Value bestaetigen (mehrere Provider, Reihenfolge = Praezedenz
+   nach den User-Dateien).
+3. Durchreichen des `provider`-Inputs: Reusable-Workflow `.github/workflows/simpici.yml`
+   + `action` + `bin/simpici-executor`.
+
+## Downstream (separate Repos, eigene Tickets)
+
+- **p5-dist-zilla-pluginbundle-author-getty** -- der Getty-Provider (bundle-spezifisch,
+  nicht "SimpiCIs Perl-Support"): emittiert `perl+<ver>+test.sh` (KEIN Job-Suffix) je
+  unterstuetzter Perl-Version; jede Datei faehrt den `dzil test`-Helper:
+  `cp -a /workspace -> $CICD_OUTPUT/src` (inkl. `.git`, da Git::GatherDir),
+  `git config --global --add safe.directory <copy>`, `cpanm -nq Dist::Zilla`,
+  `dzil authordeps --missing | cpanm -nq`, `dzil listdeps --author --missing | cpanm -nq`,
+  `dzil test`. (Das ist exakt die bestehende .github/actions/dzil-test Composite-Action,
+  angepasst an den read-only Workspace.) Single source of truth fuer unterstuetzte Perls
+  (Default `5.36 5.38 5.40`, heute im eigenen ci.yml hartkodiert). Per-Dist-Override
+  (z.B. `simpici_perl` in dist.ini) = spaetere Erweiterung.
+- **p5-beepack** -- erster Konsument: schlanke .github/workflows/ci.yml, ruft die
+  SimpiCI-Reusable mit `provider`-Ref; **kein** committetes `.cicd/`. Ersetzt/revidiert
+  Commit `d66dd2d` (die kaputte `prove`-basierte `.cicd` -- kollidiert an der phase/job-
+  Dedupe, da alle drei Dateien job=`unit` haetten) und korrigiert den Changes-Bullet.
+
+## Kontext / Herkunft
+
+Entstanden beim Versuch, BeePack auf SimpiCI umzustellen. Befund: das [@Author::GETTY]-
+Bundle hatte bisher gar kein SimpiCI-Setup (nur die dzil-test GitHub-Composite-Action),
+und ein rein statisches Generieren pro Repo waere weniger flexibel als ein Provider, der
+zentral (im Bundle) lebt und pro Repo nichts committet. Design gemeinsam durchgesprochen;
+Kern-Entscheidung: Provider-Hook (Variante B, simpici-nativ, cross-source) statt
+statischer Datei-Generierung oder GH-only-Vorstufe.
+
+Core implemented in commit f3e3b60 (local, not pushed). Executor: writable staging dir (checkout .cicd first, then providers merged no-clobber so repo/earlier-provider wins); provider = pinned OCI image via SIMPICI_PROVIDERS (mounts /workspace ro + private /cicd-out writable + event.json; no registry creds/docker socket); jobs run from staging ro at /cicd, CICD_ROOT=/cicd, /workspace stays ro; repo may ship no .cicd. Threaded provider input through simpici.yml (workflow_call+dispatch). Tests: t/80-executor.t +3 (provider adds jobs, repo wins 5.40 collision by staged content, unsafe provider name rejected) and t/action-runner.sh provider plan-only. Verified prove -lr t/ 72 ok, dzil test 86 ok. Kickoff decisions used as recommended. Open for review; downstream bundle+beepack tickets not yet created.
