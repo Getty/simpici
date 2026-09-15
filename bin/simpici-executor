@@ -210,20 +210,43 @@ run_job() {
   fi
   printf 'SimpiCI: %s/%s using %s\n' "$phase" "$job" "$image" >&2
   # Jobs in a phase run concurrently, so their output would interleave into one
-  # unreadable stream. Keep it fully live, but tag every line with the job it
-  # came from, so the parallel output stays greppable (docker-compose style).
+  # unreadable stream. Keep it fully live, but tag every line with the job it came
+  # from (docker-compose style); tee keeps a raw copy so a failed job's tail can be
+  # shown in the run summary.
+  local logfile="$action_temp/log.$phase.$job"
+  local start; start="$(date +%s)"
   local rc=0
   docker run --rm --cidfile "$action_temp/$phase.$job.cid" --workdir /workspace "${mounts[@]}" "${environment[@]}" \
     "$image" "/cicd/$basename" /run/simpici/event.json 2>&1 \
+    | tee "$logfile" \
     | while IFS= read -r line; do printf '[%s/%s] %s\n' "$phase" "$job" "$line"; done || rc=$?
   printf '%s\n' "$rc" >"$action_temp/rc.$phase.$job"
+  printf '%s\n' "$(( $(date +%s) - start ))" >"$action_temp/dur.$phase.$job"
   return "$rc"
 }
 
-# A per-job result table on the Actions run summary page, when one is available.
-# This is a pure addition -- the live, tagged job output above is unchanged.
+# A per-job result matrix on the Actions run summary page (when available): each
+# job with its image, duration and outcome, plus the tail of any failed job's log
+# so the failure is one click away. Pure addition -- the live tagged output above
+# is unchanged.
 summary="${GITHUB_STEP_SUMMARY:-}"
-[[ -n "$summary" ]] && printf '## SimpiCI\n\n| phase | job | image | result |\n|---|---|---|---|\n' >>"$summary"
+rows="$action_temp/summary_rows"; fails="$action_temp/summary_fails"
+: >"$rows"; : >"$fails"
+
+fmt_dur() {
+  local s="$1"
+  if (( s >= 60 )); then printf '%dm%02ds' "$(( s / 60 ))" "$(( s % 60 ))"; else printf '%ds' "$s"; fi
+}
+
+flush_summary() {
+  [[ -n "$summary" ]] || return 0
+  {
+    printf '## SimpiCI\n\n'
+    printf '| phase | job | image | time | result |\n|---|---|---|---|---|\n'
+    cat "$rows"
+    if [[ -s "$fails" ]]; then printf '\n### Failures\n\n'; cat "$fails"; fi
+  } >"$summary"
+}
 
 for phase in "${phases[@]}"; do
   metas=()
@@ -244,17 +267,29 @@ for phase in "${phases[@]}"; do
   for meta in "${metas[@]}"; do
     IFS=$'\t' read -r image job basename <<<"$meta"
     job_rc="$(cat "$action_temp/rc.$phase.$job" 2>/dev/null || echo 1)"
+    dur="$(fmt_dur "$(cat "$action_temp/dur.$phase.$job" 2>/dev/null || echo 0)")"
     case "$job_rc" in
-      0)  result=ok ;;
-      78) result=skipped ;;
-      *)  result="FAILED (exit $job_rc)"; failed=1 ;;
+      0)  icon='✅'; result=ok ;;
+      78) icon='⏭️'; result=skipped ;;
+      *)  icon='❌'; result="failed (exit $job_rc)"; failed=1 ;;
     esac
-    printf 'SimpiCI: %s/%s -> %s\n' "$phase" "$job" "$result" >&2
-    [[ -n "$summary" ]] && printf '| %s | %s | `%s` | %s |\n' "$phase" "$job" "$image" "$result" >>"$summary"
+    printf 'SimpiCI: %s/%s -> %s (%s)\n' "$phase" "$job" "$result" "$dur" >&2
+    printf '| %s | %s | `%s` | %s | %s %s |\n' "$phase" "$job" "$image" "$dur" "$icon" "$result" >>"$rows"
+    if [[ "$job_rc" != 0 && "$job_rc" != 78 ]]; then
+      {
+        printf '<details><summary>%s %s/%s (exit %s) — last log lines</summary>\n\n' "$icon" "$phase" "$job" "$job_rc"
+        printf '```\n'
+        tail -n 40 "$action_temp/log.$phase.$job" 2>/dev/null || true
+        printf '\n```\n\n</details>\n\n'
+      } >>"$fails"
+    fi
   done
 
   (( failed == 0 )) || {
+    flush_summary
     printf 'SimpiCI: phase %s failed; later phases will not start\n' "$phase" >&2
     exit 1
   }
 done
+
+flush_summary
