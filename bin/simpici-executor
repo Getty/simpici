@@ -233,6 +233,12 @@ summary="${GITHUB_STEP_SUMMARY:-}"
 rows="$action_temp/summary_rows"; fails="$action_temp/summary_fails"
 : >"$rows"; : >"$fails"
 
+# Maximum jobs run concurrently within a phase (SIMPICI_CONCURRENCY, default 2).
+# A whole matrix runs as containers inside one host job, so an uncapped wide
+# matrix can exhaust a single runner; the cap keeps every job but paces them.
+concurrency="${SIMPICI_CONCURRENCY:-2}"
+[[ "$concurrency" =~ ^[1-9][0-9]*$ ]] || concurrency=2
+
 fmt_dur() {
   local s="$1"
   if (( s >= 60 )); then printf '%dm%02ds' "$(( s / 60 ))" "$(( s % 60 ))"; else printf '%ds' "$s"; fi
@@ -256,12 +262,14 @@ for phase in "${phases[@]}"; do
   done <"$plan"
   (( ${#metas[@]} > 0 )) || continue
 
-  pids=()
+  running=0
   for meta in "${metas[@]}"; do
     IFS=$'\t' read -r image job basename <<<"$meta"
-    run_job "$phase" "$image" "$job" "$basename" & pids+=("$!")
+    run_job "$phase" "$image" "$job" "$basename" &
+    running=$(( running + 1 ))
+    if (( running >= concurrency )); then wait -n 2>/dev/null || true; running=$(( running - 1 )); fi
   done
-  for pid in "${pids[@]}"; do wait "$pid" || true; done
+  wait
 
   failed=0
   for meta in "${metas[@]}"; do

@@ -11,10 +11,23 @@ on:
         required: false
         type: string
         default: ""
+      concurrency:
+        description: >-
+          Maximum jobs to run at once within a phase (default 2). SimpiCI runs a
+          whole matrix as containers inside one runner job, so raise this only if
+          the runner can take it.
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       provider:
         description: Whitespace-separated pinned provider image refs
+        required: false
+        type: string
+        default: ""
+      concurrency:
+        description: Max jobs run at once within a phase (default 2)
         required: false
         type: string
         default: ""
@@ -36,3 +49,4 @@ jobs:
           CICD_IMAGE_REPOSITORY: ghcr.io/${{ github.repository }}
           CICD_PUBLISH_IMAGE: ${{ github.event_name != 'pull_request' }}
           SIMPICI_PROVIDERS: ${{ inputs.provider }}
+          SIMPICI_CONCURRENCY: ${{ inputs.concurrency }}

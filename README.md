@@ -16,12 +16,22 @@ on:
   push:
   pull_request:
 
+# Cancel a branch's older, still-running CI when you push again — SimpiCI runs a
+# whole matrix inside one job, so superseded runs are worth cancelling. Left off
+# for main so every landed commit keeps its own result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   simpici:
     permissions:
       contents: read
       packages: write
     uses: Getty/simpici/.github/workflows/simpici.yml@main
+    # with:
+    #   provider: ghcr.io/your-org/your-provider:main  # generate jobs (see Providers)
+    #   concurrency: "2"                                 # jobs at once per phase (default 2)
 ```
 
 Then add executable jobs to `.cicd/`:
