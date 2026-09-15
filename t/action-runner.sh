@@ -6,7 +6,10 @@ mkdir -p "$test_root/.cicd" "$test_root/tmp"
 touch "$test_root/.cicd/linux+prepare.sh"
 touch "$test_root/.cicd/application+dingens+13+build.api.sh"
 touch "$test_root/.cicd/ghcr.io+application+dingens+13+publish.sh"
-plan="$(SIMPICI_PLAN_ONLY=true GITHUB_WORKSPACE="$test_root" RUNNER_TEMP="$test_root/tmp" action/run.sh)"
+# Set CICD_WORKSPACE explicitly: the executor prefers it over GITHUB_WORKSPACE, and
+# when this test runs inside a SimpiCI job the outer executor has already exported
+# CICD_WORKSPACE=/workspace, which would otherwise shadow our fixture root.
+plan="$(SIMPICI_PLAN_ONLY=true CICD_WORKSPACE="$test_root" GITHUB_WORKSPACE="$test_root" RUNNER_TEMP="$test_root/tmp" action/run.sh)"
 expected=$'10\tprepare\tdocker.io/library/debian:latest\tlinux\tlinux+prepare.sh\n20\tbuild\tdocker.io/application/dingens:13\tapi\tapplication+dingens+13+build.api.sh\n50\tpublish\tghcr.io/application/dingens:13\tghcr.io+application+dingens+13\tghcr.io+application+dingens+13+publish.sh'
 [[ "$plan" == "$expected" ]] || { printf 'unexpected plan:\n%s\n' "$plan" >&2; exit 1; }
 
@@ -33,6 +36,6 @@ FAKE
 chmod +x "$prov_root/bin/docker"
 provider_plan="$(PATH="$prov_root/bin:$PATH" SIMPICI_PLAN_ONLY=true \
   SIMPICI_PROVIDERS='example.org/getty-provider@sha256:deadbeef' \
-  GITHUB_WORKSPACE="$prov_root" RUNNER_TEMP="$prov_root/tmp" action/run.sh)"
+  CICD_WORKSPACE="$prov_root" GITHUB_WORKSPACE="$prov_root" RUNNER_TEMP="$prov_root/tmp" action/run.sh)"
 provider_expected=$'30\ttest\tdocker.io/library/perl:5.36\tperl+5.36\tperl+5.36+test.sh\n30\ttest\tdocker.io/library/perl:5.38\tperl+5.38\tperl+5.38+test.sh\n30\ttest\tdocker.io/library/perl:5.40\tperl+5.40\tperl+5.40+test.sh'
 [[ "$provider_plan" == "$provider_expected" ]] || { printf 'unexpected provider plan:\n%s\n' "$provider_plan" >&2; exit 1; }

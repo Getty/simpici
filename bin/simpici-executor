@@ -208,21 +208,51 @@ run_job() {
     mounts+=( -v "$docker_socket:/var/run/docker.sock" )
     environment+=( -e DOCKER_HOST=unix:///var/run/docker.sock )
   fi
-  printf 'SimpiCI: %s/%s using %s\n' "$phase" "$job" "$image"
+  printf 'SimpiCI: %s/%s using %s\n' "$phase" "$job" "$image" >&2
+  # Jobs in a phase run concurrently, so their output would interleave into one
+  # unreadable stream. Keep it fully live, but tag every line with the job it
+  # came from, so the parallel output stays greppable (docker-compose style).
+  local rc=0
   docker run --rm --cidfile "$action_temp/$phase.$job.cid" --workdir /workspace "${mounts[@]}" "${environment[@]}" \
-    "$image" "/cicd/$basename" /run/simpici/event.json
+    "$image" "/cicd/$basename" /run/simpici/event.json 2>&1 \
+    | while IFS= read -r line; do printf '[%s/%s] %s\n' "$phase" "$job" "$line"; done || rc=$?
+  printf '%s\n' "$rc" >"$action_temp/rc.$phase.$job"
+  return "$rc"
 }
 
+# A per-job result table on the Actions run summary page, when one is available.
+# This is a pure addition -- the live, tagged job output above is unchanged.
+summary="${GITHUB_STEP_SUMMARY:-}"
+[[ -n "$summary" ]] && printf '## SimpiCI\n\n| phase | job | image | result |\n|---|---|---|---|\n' >>"$summary"
+
 for phase in "${phases[@]}"; do
-  pids=()
+  metas=()
   while IFS=$'\t' read -r rank planned_phase image job basename; do
     [[ "$planned_phase" == "$phase" ]] || continue
-    run_job "$phase" "$image" "$job" "$basename" & pids+=("$!")
+    metas+=("$image"$'\t'"$job"$'\t'"$basename")
   done <"$plan"
-  failed=0
-  for pid in "${pids[@]}"; do
-    if wait "$pid"; then :; else status=$?; [[ $status -eq 78 ]] || failed=1; fi
+  (( ${#metas[@]} > 0 )) || continue
+
+  pids=()
+  for meta in "${metas[@]}"; do
+    IFS=$'\t' read -r image job basename <<<"$meta"
+    run_job "$phase" "$image" "$job" "$basename" & pids+=("$!")
   done
+  for pid in "${pids[@]}"; do wait "$pid" || true; done
+
+  failed=0
+  for meta in "${metas[@]}"; do
+    IFS=$'\t' read -r image job basename <<<"$meta"
+    job_rc="$(cat "$action_temp/rc.$phase.$job" 2>/dev/null || echo 1)"
+    case "$job_rc" in
+      0)  result=ok ;;
+      78) result=skipped ;;
+      *)  result="FAILED (exit $job_rc)"; failed=1 ;;
+    esac
+    printf 'SimpiCI: %s/%s -> %s\n' "$phase" "$job" "$result" >&2
+    [[ -n "$summary" ]] && printf '| %s | %s | `%s` | %s |\n' "$phase" "$job" "$image" "$result" >>"$summary"
+  done
+
   (( failed == 0 )) || {
     printf 'SimpiCI: phase %s failed; later phases will not start\n' "$phase" >&2
     exit 1
