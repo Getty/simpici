@@ -1,0 +1,22 @@
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":1,"ts":"2026-09-04T04:49:28Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":2,"ts":"2026-09-04T04:49:33Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":3,"ts":"2026-09-04T04:49:37Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":4,"ts":"2026-09-04T04:49:42Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":5,"ts":"2026-09-04T04:49:46Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":5,"ts":"2026-09-04T05:09:45Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":6,"ts":"2026-09-05T01:10:45Z"}
+{"action":"move","agent":"codex-simpici","detail":"in-progress","task_id":1,"ts":"2026-09-06T03:41:19Z"}
+{"action":"move","agent":"codex-simpici","detail":"in-progress","task_id":2,"ts":"2026-09-06T03:41:19Z"}
+{"action":"move","agent":"codex-simpici","detail":"in-progress","task_id":3,"ts":"2026-09-06T03:41:19Z"}
+{"action":"move","agent":"codex-simpici","detail":"in-progress","task_id":5,"ts":"2026-09-06T03:41:19Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"done","task_id":1,"ts":"2026-09-07T13:31:45Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"done","task_id":2,"ts":"2026-09-07T13:31:45Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"done","task_id":3,"ts":"2026-09-07T13:31:45Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"done","task_id":5,"ts":"2026-09-07T13:31:45Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":4,"ts":"2026-09-07T13:32:06Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"done","task_id":3,"ts":"2026-09-07T13:32:14Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":7,"ts":"2026-09-14T22:55:00Z"}
+{"action":"move","agent":"simpici","detail":"in-progress","task_id":7,"ts":"2026-09-15T02:16:28Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":7,"ts":"2026-09-15T02:23:37Z"}
+{"action":"move","agent":"simpici","detail":"review","task_id":7,"ts":"2026-09-15T02:27:08Z"}
+{"action":"move","agent":"simpici","detail":"done","task_id":7,"ts":"2026-09-15T02:49:22Z"}
