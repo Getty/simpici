@@ -72,8 +72,10 @@ SimpiCI::App::Eventd - implementation of the simpicid polling daemon
 
 =head1 DESCRIPTION
 
-Polls configured Git refs, normalizes and deduplicates changes, then sends exact
-revisions through the shared phased container executor.
+Polls configured Git refs and tracks their last observed tips. In local mode,
+changed tips run exact revisions through the shared phased container executor.
+Dispatcher mode enqueues events with durable repository/ref/commit
+deduplication.
 
 =head1 METHODS
 
@@ -94,7 +96,9 @@ Required JSON configuration. See C<etc/simpici.example.json>.
 
 =item B<--once>
 
-Poll every configured repository once and exit instead of sleeping.
+Poll every configured repository once and exit instead of sleeping. A normally
+completed poll returns zero even if a local build failed; inspect the run
+reports for build status.
 
 =item B<--runner> I<file>
 

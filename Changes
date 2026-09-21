@@ -1,16 +1,19 @@
 {{$NEXT}}
   - Introduce the SimpiCI distribution with normalized events, exact detached
-    checkouts, filesystem state and sanitized static JSON/log reports.
-  - Poll GitHub and Forgejo mirrors with independent observations and shared
-    run deduplication, including newly appearing refs after initial polling.
+    checkouts, filesystem state and public JSON/log reports. Local logs are
+    unredacted; worker uploads redact assigned secret values.
+  - Poll GitHub and Forgejo mirrors with independent observations, including
+    newly appearing refs after initial polling. Shared durable run
+    deduplication is provided by the dispatcher queue.
   - Dispatch durable leased jobs to outbound SSH workers, with fenced recovery
     and idempotent completion upload through a restricted worker protocol.
   - Scope dispatcher secret files to repositories, refs, events and publish or
     deploy phases; redact uploaded logs and keep values out of command lines.
   - Discover repository jobs from their filenames, execute them in selected
-    containers and enforce ordered phase barriers with same-phase concurrency.
+    containers and enforce ordered phase barriers with bounded same-phase
+    concurrency (default 2).
   - Merge repository jobs and provider-generated jobs in a writable staging
-    directory: pinned, org-owned provider images (SIMPICI_PROVIDERS, exposed as
+    directory: operator-selected provider images (SIMPICI_PROVIDERS, exposed as
     the reusable workflow's "provider" input) generate additional .cicd/*.sh
     files, and the repository's own same-named jobs always win. Providers run
     read-only over the checkout with no registry credentials or Docker socket,
@@ -23,5 +26,10 @@
     under SimpiCI::App::*.
   - Install the shared phase executor as simpici-executor so CPAN, containers,
     GitHub and Forgejo use the same runnable implementation.
+  - Expand the README, cookbook and operations reference with executable
+    examples, distinguish current behavior from the planned branch policy,
+    and remove obsolete planning notes.
+  - Consolidate project agent instructions and skills under CLAUDE.md and
+    .claude with no duplicate agent configuration.
   - Publish the daemon image primarily as raudssus/simpici on Docker Hub and
     mirror it to GHCR with independent CI jobs.

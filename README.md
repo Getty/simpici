@@ -1,266 +1,158 @@
 # SimpiCI
 
-SimpiCI is a small Git-aware CI runner. A repository describes its jobs with
-ordinary executable files in `.cicd/`; their filenames select the container
-image, phase, and job name. There is no workflow DSL, build-step YAML, matrix
-language, or central build configuration.
+**A filename. A container. A shell script. Your CI.**
 
-## Use it on GitHub
+SimpiCI is a small Git-aware CI runner for people who want to understand their
+builds without learning another pipeline language.
 
-Add `.github/workflows/ci.yml` to the repository you want to build:
+```text
+.cicd/
+├── linux+prepare.lint.sh      → first: lint shell scripts
+├── perl+5.40+test.sh          → then: test on Perl 5.40
+├── perl+5.42+test.sh          → alongside it: test on Perl 5.42
+└── linux+package.archive.sh  → finally: create an archive
+```
+
+The filename selects the image, phase and job. The contents are your ordinary
+shell script. No build-step YAML, matrix language or template inheritance.
+GitHub and Forgejo need only a small workflow to get started; the native
+**`simpicid`** can poll repositories instead.
+
+> **Current status:** The executor, native CLI, polling daemon, SSH worker and
+> GitHub/Forgejo action are available. Automatic branch-protection checks and
+> `.cicd/policy.json` are **agreed designs, not implemented features**.
+> Adding that file does not protect a run today.
+
+**Get started:** [Quickstart](#quickstart) · [GitHub](#github) · [Native daemon](#native-daemon)
+
+**Explore:** [Jobs and phases](#jobs-and-phases) · [Recipes](#recipes) ·
+[Providers](#providers) · [Branch protection](#branch-protection-and-policy) ·
+[Operations](deploy/README.md)
+
+## Choose your entry point
+
+| You want to … | Use … | What happens? |
+| --- | --- | --- |
+| Try `.cicd` in your current checkout | `simpici-executor` | Runs jobs from the existing working directory. |
+| Build a specific Git commit | `simpici --event …` | Creates a fresh, exact checkout and a native report. |
+| Run your own CI without hosted Actions | `simpicid --config …` | Polls configured refs and builds new revisions. |
+| Use GitHub or Forgejo Actions | The composite action | Uses the hosted runner's checkout and infrastructure. |
+| Build on a separate VM | Dispatcher + `simpici-worker` | Persists jobs; the worker retrieves them over restricted SSH. |
+
+**Same job contract, different infrastructure:** Every entry point uses the
+same shell executor. Hosted runs do not automatically have the native store,
+its deduplication or its static reports.
+
+The native service is **Perl**; the container executor is **Bash**. Your jobs
+can use any language for which you have a suitable container image.
+
+## Quickstart
+
+### 1. Add your first job
+
+In the existing Git repository you want to build, with at least one commit:
+
+```sh
+mkdir -p .cicd
+cat > .cicd/linux+test.smoke.sh <<'JOB'
+#!/bin/sh
+set -eu
+printf 'Building commit %s\n' "$CICD_COMMIT"
+test -e "$CICD_WORKSPACE/.git"
+printf 'Checkout is available.\n'
+JOB
+chmod +x .cicd/linux+test.smoke.sh
+```
+
+`linux` is an alias for `docker.io/library/debian:latest`. `test` is the phase;
+`smoke` is your chosen job name. Replace the script body with your project's
+actual tests when you are ready.
+
+### 2. Plan and run locally
+
+The host needs Bash 4.3 or newer, Git and standard Unix tools. Actual jobs also
+need the Docker CLI and access to a Docker daemon. Clone SimpiCI once into a
+separate directory, for example:
+
+```sh
+SIMPICI_TOOLS="$HOME/src/simpici"
+git clone https://github.com/Getty/simpici.git "$SIMPICI_TOOLS"
+```
+
+Still from the root of the repository you want to build:
+
+```sh
+# Show the plan only; explicitly disable providers.
+CICD_SOURCE=manual CICD_COMMIT="$(git rev-parse HEAD)" \
+CICD_WORKSPACE="$PWD" SIMPICI_PROVIDERS='' SIMPICI_PLAN_ONLY=true \
+  "$SIMPICI_TOOLS/bin/simpici-executor"
+
+# Run the jobs in Docker.
+CICD_SOURCE=manual CICD_COMMIT="$(git rev-parse HEAD)" \
+CICD_WORKSPACE="$PWD" SIMPICI_PROVIDERS='' SIMPICI_CONCURRENCY=2 \
+  "$SIMPICI_TOOLS/bin/simpici-executor"
+```
+
+**Important:** `SIMPICI_PLAN_ONLY=true` does not prevent configured providers
+from running. A container-free plan must also set `SIMPICI_PROVIDERS=''`.
+
+The direct executor uses your existing checkout, including local changes.
+For a fresh checkout of an exact commit, use the [native CLI](#build-one-commit).
+Remote builds require you to commit and push the jobs with their executable
+bits set.
+
+## GitHub
+
+### CI without publishing credentials
+
+Add `.github/workflows/ci.yml` to the target repository:
 
 ```yaml
 name: CI
-
 on:
   push:
   pull_request:
 
-# Cancel a branch's older, still-running CI when you push again — SimpiCI runs a
-# whole matrix inside one job, so superseded runs are worth cancelling. Left off
-# for main so every landed commit keeps its own result.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  simpici:
-    permissions:
-      contents: read
-      packages: write
-    uses: Getty/simpici/.github/workflows/simpici.yml@main
-    # with:
-    #   provider: ghcr.io/your-org/your-provider:main  # generate jobs (see Providers)
-    #   concurrency: "2"                                 # jobs at once per phase (default 2)
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: Getty/simpici/action@main
+        env:
+          SIMPICI_CONCURRENCY: "2"
 ```
 
-Then add executable jobs to `.cicd/`:
+The action executes the checked-out repository's `.cicd` jobs. It does not
+install persistent runner infrastructure for you. The `@main` references are
+convenient for trying it out; pin actions to reviewed commit SHAs for controlled
+updates.
 
-```text
-.cicd/
-├── perl+5.40+test.unit.sh
-├── docker+27+build.image.sh
-└── docker+27+publish.image.sh
-```
+**Fork PRs need disposable, isolated runners.** Jobs are executable code.
+Build and publish jobs receive an available Docker socket, so a read-only
+checkout is not a security boundary around the runner host. Do not run
+untrusted PRs on a persistent VM with production access.
 
-That is the complete GitHub setup. The reusable workflow checks out the exact
-revision, calls the SimpiCI action, and may publish to
-`ghcr.io/<owner>/<repository>` using GitHub's short-lived token.
+### The bundled reusable workflow
 
-## Job filenames
-
-The grammar is:
-
-```text
-<image>+<phase>[.<job>].sh
-```
-
-The fixed phase order is `prepare`, `build`, `test`, `package`, `publish`, and
-`deploy`. All jobs in one phase run concurrently. The next phase starts only
-after the whole current phase succeeded or skipped. Exit status 0 succeeds, 78
-skips, and every other status fails the phase and prevents later phases.
-
-Image components are separated with `+` because `/` and `:` are unsuitable in
-filenames:
-
-| Filename prefix | Container image |
-|---|---|
-| `linux` | `docker.io/library/debian:latest` |
-| `perl` | `docker.io/library/perl:latest` |
-| `perl+5.40` | `docker.io/library/perl:5.40` |
-| `application+dingens+13` | `docker.io/application/dingens:13` |
-| `ghcr.io+application+dingens+13` | `ghcr.io/application/dingens:13` |
-
-The optional suffix after the phase is the job identity. For example,
-`perl+5.40+test.unit.sh` is job `unit` in the test phase. Without that suffix,
-the image expression becomes the identity.
-
-Each job receives the checkout read-only at `CICD_WORKSPACE`, plus private
-writable `CICD_OUTPUT` and `CICD_ARTIFACTS` directories. Registry credentials
-are exposed only during `publish` and `deploy`. Build and publish jobs also
-receive the host's Docker socket when one is available.
-
-## Environment passed to jobs
-
-Every job receives:
-
-| Variable | Meaning |
-|---|---|
-| `CICD_RUN_NUMBER` | Numeric/native or hosted run identifier |
-| `CICD_SOURCE` | Event source such as `git-poll` or `github-actions` |
-| `CICD_EVENT` | Event type such as `push` or `pull_request` |
-| `CICD_REPOSITORY` | Repository identity |
-| `CICD_CLONE_URL` | Source clone URL |
-| `CICD_REF` | Canonical `refs/...` name |
-| `CICD_BRANCH` / `CICD_TAG` | Derived branch or tag, otherwise empty |
-| `CICD_COMMIT` | Exact commit object ID |
-| `CICD_PHASE` / `CICD_JOB` | Parsed job coordinates |
-| `CICD_IMAGE_REF` | Resolved container image |
-| `CICD_EVENT_FILE` | Normalized event JSON |
-| `CICD_ROOT` | Repository `.cicd` directory |
-| `CICD_OUTPUT` | Writable job output directory |
-| `CICD_ARTIFACTS` | Writable job artifact directory |
-
-Publish and deploy jobs additionally receive `CICD_REGISTRY`,
-`CICD_REGISTRY_USER`, `CICD_REGISTRY_PASSWORD`, and `CICD_PUBLISH_IMAGE`.
-
-## The read-only workspace
-
-Every job runs with the checkout mounted **read-only** at `CICD_WORKSPACE`
-(which is also the working directory). Anything a job needs to write goes into
-the private, writable `CICD_OUTPUT`, or into `CICD_ARTIFACTS` for files worth
-keeping. Tools that build in-tree — `npm ci`, `cargo build`, `pip install -e .`,
-`dzil test` — copy the checkout out first:
-
-```sh
-#!/usr/bin/env bash
-set -euo pipefail
-cp -a "$CICD_WORKSPACE"/. "$CICD_OUTPUT/src"
-cd "$CICD_OUTPUT/src"
-# ...build and test here, in a writable tree...
-```
-
-Read-only-friendly commands — `prove -lr t/` with dependencies already
-installed, a linter that only reads, `go test ./...` (its cache lives in
-`$HOME`) — can run in place against `$CICD_WORKSPACE`.
-
-## Cookbook
-
-Each block is a complete `.cicd/<name>` file. The filename selects the image
-and phase; the body is ordinary shell. Copy a file once per image to get a
-matrix — the image expression keeps the job names distinct, so no `.job` suffix
-is needed.
-
-**Perl — unit tests** — `.cicd/perl+5.40+test.sh`
-
-```sh
-#!/usr/bin/env bash
-set -euo pipefail
-cpanm --installdeps --notest "$CICD_WORKSPACE"
-prove -lr "$CICD_WORKSPACE/t"
-```
-
-For an `[@Author::GETTY]` distribution, don't hand-write this — use the
-[provider](#providers) below, which runs a full `dzil test` on every supported
-Perl with no `.cicd` at all.
-
-**Node — a version matrix** — `.cicd/node+20+test.sh` and `.cicd/node+22+test.sh`
-
-```sh
-#!/usr/bin/env bash
-set -euo pipefail
-cp -a "$CICD_WORKSPACE"/. "$CICD_OUTPUT/src"
-cd "$CICD_OUTPUT/src"
-npm ci
-npm test
-```
-
-**Python — pytest** — `.cicd/python+3.12+test.sh`
-
-```sh
-#!/usr/bin/env bash
-set -euo pipefail
-cp -a "$CICD_WORKSPACE"/. "$CICD_OUTPUT/src"
-cd "$CICD_OUTPUT/src"
-pip install --quiet -e '.[test]'
-pytest -q
-```
-
-**Rust — test, clippy and fmt as three jobs on one image** —
-`.cicd/rust+1.81+test.sh`, `.cicd/rust+1.81+test.clippy.sh`,
-`.cicd/rust+1.81+test.fmt.sh`
-
-```sh
-# rust+1.81+test.sh
-#!/usr/bin/env bash
-set -euo pipefail
-cp -a "$CICD_WORKSPACE"/. "$CICD_OUTPUT/src"; cd "$CICD_OUTPUT/src"
-cargo test --locked
-```
-
-```sh
-# rust+1.81+test.clippy.sh
-#!/usr/bin/env bash
-set -euo pipefail
-cp -a "$CICD_WORKSPACE"/. "$CICD_OUTPUT/src"; cd "$CICD_OUTPUT/src"
-cargo clippy --all-targets -- -D warnings
-```
-
-```sh
-# rust+1.81+test.fmt.sh — reads only, so it runs in place
-#!/usr/bin/env bash
-set -euo pipefail
-cd "$CICD_WORKSPACE"
-cargo fmt --check
-```
-
-Here the explicit `.clippy` / `.fmt` suffixes matter: all three share the image
-`rust+1.81`, so without distinct job names they would collide.
-
-**Go — vet and test** — `.cicd/golang+1.23+test.sh`
-
-```sh
-#!/usr/bin/env bash
-set -euo pipefail
-cd "$CICD_WORKSPACE"
-go vet ./...
-go test ./...
-```
-
-**Shell lint in an earlier phase** — `.cicd/linux+prepare.lint.sh`
-
-```sh
-#!/usr/bin/env bash
-set -euo pipefail
-apt-get update -qq && apt-get install -y -qq shellcheck
-shellcheck "$CICD_WORKSPACE"/.cicd/*.sh
-```
-
-Because it is in the `prepare` phase, it runs (and must pass) before any `test`
-job starts.
-
-**Build and publish a container** — `.cicd/docker+27+build.image.sh` and
-`.cicd/docker+27+publish.image.sh`
-
-```sh
-# docker+27+build.image.sh
-#!/usr/bin/env bash
-set -euo pipefail
-image="$(printf '%s' "$CICD_IMAGE_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-docker build --tag "$image:$CICD_COMMIT" "$CICD_WORKSPACE"
-```
-
-```sh
-# docker+27+publish.image.sh
-#!/usr/bin/env bash
-set -euo pipefail
-# Skip (exit 78) unless this run is allowed to publish and has credentials.
-[ "${CICD_PUBLISH_IMAGE:-false}" = true ] || exit 78
-[ -n "${CICD_REGISTRY_USER:-}" ] && [ -n "${CICD_REGISTRY_PASSWORD:-}" ] || exit 78
-image="$(printf '%s' "$CICD_IMAGE_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-printf '%s' "$CICD_REGISTRY_PASSWORD" \
-  | docker login "$CICD_REGISTRY" -u "$CICD_REGISTRY_USER" --password-stdin
-docker push "$image:$CICD_COMMIT"
-[ "$CICD_REF" = refs/heads/main ] && docker tag "$image:$CICD_COMMIT" "$image:latest" && docker push "$image:latest"
-```
-
-`build` runs before `publish`, and only `publish`/`deploy` jobs ever receive
-registry credentials — so a pull request builds the image and cleanly skips the
-push.
-
-## Providers
-
-A **provider** lets a job list come from a program instead of only from files in
-the checkout — without turning `.cicd` into a matrix language. A provider is a
-**pinned, org-owned OCI image** that SimpiCI runs once, read-only over the
-checkout, with its own private writable directory. It writes ordinary
-`<image>+<phase>[.<job>].sh` files there, and SimpiCI merges them into the
-effective `.cicd` **without overwriting a name the repository already ships** —
-so your own files always win.
-
-Select providers from the workflow:
+For **trusted pushes** that need registry access, there is also this entry
+point:
 
 ```yaml
+name: Release CI
+on:
+  push:
+    branches: [main]
+
 jobs:
   simpici:
     permissions:
@@ -268,234 +160,355 @@ jobs:
       packages: write
     uses: Getty/simpici/.github/workflows/simpici.yml@main
     with:
-      provider: ghcr.io/acme/simpici-provider:main
+      concurrency: "2"
 ```
 
-`provider` is a whitespace-separated list; earlier entries win a collision
-(after the repository's own files).
+This workflow supplies the GitHub token as a GHCR credential. It is not an
+implementation of SimpiCI's planned branch policy. For tests alone, the first
+example grants fewer permissions.
 
-**The contract.** SimpiCI runs each provider as:
+## Jobs and phases
 
-```console
-docker run --rm --workdir /workspace \
-  -v <checkout>:/workspace:ro \
-  -v <event>:/run/simpici/event.json:ro \
-  -v <private>:/cicd-out \
-  -e CICD_PROVIDER_OUT=/cicd-out \
-  -e CICD_WORKSPACE=/workspace -e CICD_EVENT_FILE=/run/simpici/event.json \
-  -e CICD_SOURCE -e CICD_EVENT -e CICD_REPOSITORY \
-  -e CICD_REF -e CICD_BRANCH -e CICD_TAG -e CICD_COMMIT \
-  <image> /run/simpici/event.json
+### A filename defines a job
+
+```text
+<image>+<phase>[.<job>].sh
 ```
 
-The provider writes executable `.sh` job files (and optional `lib/` helpers)
-into `$CICD_PROVIDER_OUT`. It gets **no registry credentials and no Docker
-socket**, and `/workspace` is read-only: a provider plans work, it does not do
-it. A non-zero exit fails the run.
+| File | Image | Phase | Job |
+| --- | --- | --- | --- |
+| `linux+prepare.lint.sh` | `docker.io/library/debian:latest` | `prepare` | `lint` |
+| `perl+5.40+test.sh` | `docker.io/library/perl:5.40` | `test` | `perl+5.40` |
+| `node+22+test.frontend.sh` | `docker.io/library/node:22` | `test` | `frontend` |
+| `application+dingens+13+build.sh` | `docker.io/application/dingens:13` | `build` | `application+dingens+13` |
+| `ghcr.io+acme+builder+3+package.tar.sh` | `ghcr.io/acme/builder:3` | `package` | `tar` |
 
-**Trust.** Providers are pinned and org-owned — you run your own code, so there
-is no third-party supply chain and no plugin marketplace. Writing your own
-company provider, encoding "what to test and where" once for a whole fleet of
-repositories, is the intended use.
+A `+` separates image components because `/` cannot be part of a filename.
+Short aliases such as `linux`, `perl`, `node` and `python` are supported.
+Explicit version tags give you more control, but registry tags are still
+mutable and do not guarantee reproducible images.
 
-**A minimal provider** — an image whose entrypoint emits one job:
+**Job names must be unique within a phase**, even across different images.
+For a version matrix, leaving out the explicit job name is particularly handy:
+
+```sh
+cp .cicd/perl+5.40+test.sh .cicd/perl+5.42+test.sh
+```
+
+### Six phases, one fixed order
+
+```text
+prepare → build → test → package → publish → deploy
+```
+
+- By default, at most **two jobs run concurrently** within a phase.
+- `SIMPICI_CONCURRENCY` changes the limit; `1` runs jobs serially.
+- The next phase starts only after the current phase has finished.
+- Exit **0** means success, **78** means deliberately skipped; any other exit
+  code fails the phase and prevents later phases from starting.
+- All jobs in the current phase still run. Failures are evaluated after the
+  entire phase batch, not as an immediate fail-fast interruption.
+
+The image must provide the interpreter named in the shebang. SimpiCI executes
+the executable script directly; it does not install Bash into an Alpine image
+or automatically override the image's `ENTRYPOINT`.
+
+### Read here, write there
+
+| Location | Contract |
+| --- | --- |
+| `$CICD_WORKSPACE` | Read-only checkout; also the job's working directory |
+| `$CICD_ROOT` | Effective `.cicd` job plan, including provider files |
+| `$CICD_OUTPUT` | This job's private, writable working directory |
+| `$CICD_ARTIFACTS` | This job's private, writable artifact directory |
+
+Many tools write into the project directory. Before running `npm ci`,
+`cargo test`, `dzil test` or similar commands, copy the checkout:
+
+```sh
+cp -a "$CICD_WORKSPACE"/. "$CICD_OUTPUT/src"
+cd "$CICD_OUTPUT/src"
+```
+
+**Output and artifacts are currently private to each job.** A `deploy` job
+does not automatically see a previous `package` job's artifacts. Automatic
+uploads and artifact transfer between worker and dispatcher are not available
+either. Keep `RUNNER_TEMP` and `TMPDIR` outside the checkout so copies and
+archives do not accidentally include their own temporary output.
+
+See the [executor reference](docs/executor.md) for job variables, executor
+settings and status details.
+
+## Recipes
+
+Each example is a complete file. Remember to run `chmod +x` afterwards.
+The versions are examples, not a list of built-in toolchains.
+
+### Node: install dependencies and run tests
+
+File: `.cicd/node+22+test.sh`. Requires `package-lock.json` and a `test` script
+in `package.json`.
 
 ```sh
 #!/bin/sh
 set -eu
-: "${CICD_PROVIDER_OUT:?run me from SimpiCI}"
-cat > "$CICD_PROVIDER_OUT/node+22+test.sh" <<'JOB'
-#!/usr/bin/env bash
-set -euo pipefail
-cp -a "$CICD_WORKSPACE"/. "$CICD_OUTPUT/src"; cd "$CICD_OUTPUT/src"
-npm ci && npm test
-JOB
-chmod +x "$CICD_PROVIDER_OUT/node+22+test.sh"
+cp -a "$CICD_WORKSPACE"/. "$CICD_OUTPUT/src"
+cd "$CICD_OUTPUT/src"
+npm ci
+npm test
 ```
 
-**A real one** ships with the `[@Author::GETTY]` Dist::Zilla plugin bundle:
-[`ghcr.io/getty/simpici-dzil-provider`](https://github.com/Getty/p5-dist-zilla-pluginbundle-author-getty/tree/main/simpici-provider).
-A Perl distribution adds the workflow with `provider:
-ghcr.io/getty/simpici-dzil-provider:main`, commits **no `.cicd`**, and gets a
-full `dzil test` on every Perl version the bundle supports.
+For a second Node version, copy the file to `.cicd/node+24+test.sh`.
+That is the entire matrix.
 
-## What would it look like as SimpiCI?
+### Perl: CPAN dependencies and tests
 
-A quick translation of shapes you already recognize — the point is how little
-there is to write.
+File: `.cicd/perl+5.40+test.sh`. Requires a dependency description supported by
+`cpanm`, such as `cpanfile`, and tests under `t/`.
 
-- **A Node library with a 18/20/22 Jest matrix.** Three files:
-  `node+18+test.sh`, `node+20+test.sh`, `node+22+test.sh`, each `npm ci &&
-  npm test`. No `strategy.matrix`, no `setup-node`.
-- **A Python package tested on 3.10–3.12 with a lint gate.** One
-  `linux+prepare.lint.sh` (ruff), then `python+3.10+test.sh` …
-  `python+3.12+test.sh`. Lint runs first because `prepare` precedes `test`.
-- **A Rust crate.** `rust+1.81+test.sh`, `+test.clippy.sh`, `+test.fmt.sh` —
-  three checks, one toolchain image, run in parallel.
-- **A Go microservice that ships an image.** `golang+1.23+test.sh`, then
-  `docker+27+build.image.sh` and `docker+27+publish.image.sh`. The push skips
-  itself on pull requests.
-- **A Perl CPAN distribution.** Nothing in `.cicd` at all — just the workflow
-  and `provider: ghcr.io/getty/simpici-dzil-provider:main`.
-- **A static site.** `linux+build.site.sh` writes the built site to
-  `$CICD_ARTIFACTS`; a `deploy` job rsyncs it.
-
-Every one of these runs **identically** from `bin/simpici` on your laptop, from
-the polling daemon, and from GitHub or Forgejo Actions — same files, same
-containers, same result.
-
-## Forgejo
-
-Forgejo Actions uses the same composite action and `.cicd` contract. Check out
-the repository and invoke either a locally vendored `./action` or the fully
-qualified SimpiCI action URL. Registry credentials remain workflow inputs; the
-repository scripts retain all publish policy.
-
-## Run the polling daemon
-
-Pull the ready-to-run image from Docker Hub (primary) or GHCR (mirror):
-
-```console
-docker pull raudssus/simpici
-docker pull ghcr.io/getty/simpici
-```
-
-Create a configuration based on `etc/simpici.example.json`, then mount it with
-a persistent private state directory and the Docker socket:
-
-```console
-docker run --rm \
-  -v "$PWD/simpici.json:/etc/simpici.json:ro" \
-  -v "$PWD/var:/var/lib/simpici" \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  raudssus/simpici \
-  --config /etc/simpici.json
-```
-
-Set `root` to `/var/lib/simpici` in that configuration. Use `--once` for one
-polling cycle. `simpicid --help` and `simpicid --man` document all command
-options.
-
-For a source checkout, the equivalent commands are:
-
-```console
-perl -Ilib bin/simpicid --config etc/simpici.example.json --once
-perl -Ilib bin/simpicid --config etc/simpici.example.json
-```
-
-## Run one event
-
-The trusted one-shot command accepts a normalized event JSON document:
-
-```console
-perl -Ilib bin/simpici --event event.json --root var
-```
-
-Required event fields are `source`, `event`, `repository`, `clone_url`, `ref`,
-and a full 40- or 64-character hexadecimal `commit`. `simpici --help` and
-`simpici --man` describe timeout and executor overrides. A source checkout uses
-`bin/simpici-executor`; an installed distribution finds `simpici-executor` on
-`PATH`.
-
-## Perl API
-
-The public modules and methods are:
-
-- `SimpiCI::Event->new(...)` validates a normalized event.
-- `$event->deduplication_key` returns the stable SHA-256 key for repository,
-  ref, and commit.
-- `$event->as_hash` and `$event->as_json` return deterministic copies.
-- `SimpiCI::Store->new(root => $path)` creates a private filesystem store.
-- `$store->prepare` creates its required directory layout.
-- `$store->allocate_run` atomically allocates a monotonically increasing run.
-- `$store->write_json($relative, $value)` atomically publishes JSON beneath the
-  store root and rejects escaping paths.
-- `SimpiCI::Runner->new(store => $store, timeout => $seconds,
-  runner_script => $path)` creates the exact-checkout runner.
-- `$runner->run($event)` executes the event and returns its sanitized report.
-- `SimpiCI::Source::GitPoll->new(store => ..., runner => ..., repository =>
-  ...)->poll` checks configured refs once and returns generated run reports.
-- `SimpiCI::App::Run->run(@arguments)` implements the `simpici` command.
-- `SimpiCI::App::Eventd->run(@arguments)` implements the `simpicid` daemon.
-
-Only those methods are public. Methods beginning with `_` are implementation
-details.
-
-## Static reports
-
-SimpiCI writes sanitized reports and logs below the store's `public/` tree.
-Serve the bundled viewer locally through Traefik and nginx:
-
-```console
-docker compose up -d
-```
-
-It is then available at <http://127.0.0.1:8080/>. Queue state, checkouts,
-credentials, and raw internal payloads remain outside the public tree.
-
-## Development
-
-```console
+```sh
+#!/bin/sh
+set -eu
+cp -a "$CICD_WORKSPACE"/. "$CICD_OUTPUT/src"
+cd "$CICD_OUTPUT/src"
+cpanm --installdeps --notest .
 prove -lr t/
 ```
 
-Release validation uses `dzil test`; ordinary development does not require a
-CPAN release toolchain.
+### Save a source archive
 
-Installing the distribution also installs `simpici-executor`. The hosted
-action delegates to that same executable, so native and hosted runs cannot
-silently acquire different planning behavior.
+File: `.cicd/linux+package.source.sh`.
 
-## Images and links
+```sh
+#!/bin/sh
+set -eu
+tar --exclude=./.git -czf "$CICD_ARTIFACTS/source.tar.gz" \
+  -C "$CICD_WORKSPACE" .
+```
 
-- Docker Hub: `raudssus/simpici`
-- GitHub Container Registry: `ghcr.io/getty/simpici`
-- GitHub: <https://github.com/Getty/simpici>
-- Forgejo: <https://src.ci/cindustries/simpici>
+The file ends up in **this job's** artifact directory. This example deliberately
+does not promise an automatic download link or access from another job.
 
-The repository's own Docker Hub mirror uses the `DOCKERHUB_TOKEN` GitHub
-Actions secret. The public account name is fixed to `raudssus` in its CI
-workflow.
+### Deliberately skip a job
 
-## Where SimpiCI fits
+```sh
+#!/bin/sh
+set -eu
+[ "$CICD_EVENT" = push ] || exit 78
+[ "$CICD_REF" = refs/heads/main ] || exit 78
+printf 'This step is intended only for pushes to main.\n'
+```
 
-SimpiCI is aimed at people and organizations who maintain **many repositories,
-across many languages,** and are tired of copying YAML between them. Its bet is
-that a CI job is nothing more than *a container plus a shell script*, so:
+This is a decision made by the script, **not access control**. An untrusted
+script could remove the guard. The trusted entry point must restrict
+credentials independently.
 
-- **The same run everywhere.** `bin/simpici` on your laptop, the polling daemon
-  on a box you own, and GitHub or Forgejo Actions all execute the identical
-  `.cicd` files in the identical containers. There is no "works locally, breaks
-  in CI."
-- **No language lock-in.** Because a job just names an image, every ecosystem
-  with a public image already works — the cookbook above spans Perl, Node,
-  Python, Rust, Go, Ruby and Docker and SimpiCI knows none of them specifically.
-- **House conventions live in one place.** A [provider](#providers) encodes
-  "how we test our Perl dists" (or Go services, or Node libraries) once, as an
-  org-owned image. Change how the whole fleet is tested by republishing the
-  provider — not by editing a workflow in every repository.
+**More complete examples:** [Python, Rust, Go, Ruby, shell linting,
+container builds/publishing and a custom provider](docs/cookbook.md).
 
-The ideal end state is a repository whose entire CI is one small workflow that
-says *"run my `.cicd`, plus my organization's provider,"* and nothing more —
-while a repository that needs something unusual just drops another `.sh` file
-next to the rest and it runs.
+## Providers
 
-What SimpiCI deliberately is **not**: a matrix or templating DSL, a plugin
-marketplace, or a Kubernetes-native pipeline engine. Simple things stay simple
-(a filename and a shell script); complex things stay possible (phases, skips,
-and providers) — without a configuration language in between.
+An organization can generate jobs from its own OCI image instead of copying
+the same scripts into many repositories:
 
-## License
+```sh
+CICD_WORKSPACE="$PWD" \
+SIMPICI_PROVIDERS='ghcr.io/acme/simpici-provider:1' \
+  "$SIMPICI_TOOLS/bin/simpici-executor"
+```
+
+Replace the example image with your own provider. Set the same environment
+variable when using the GitHub composite action; the reusable workflow exposes
+it as the `provider` input.
+
+The provider writes ordinary jobs to `$CICD_PROVIDER_OUT`. It receives a
+read-only checkout and its own writable directory, but no registry credentials
+or Docker socket. Merge precedence is:
+
+1. Repository files win.
+2. Earlier providers win over later providers.
+3. A provider may add to the repository's CI, not replace existing files.
+
+Separate multiple providers with whitespace. A failed provider fails
+preparation. Providers must run even in plan-only mode so their jobs can
+be discovered.
+
+**Providers are trusted executable code**, not a safe plugin sandbox.
+SimpiCI enforces neither organizational ownership nor digest pinning.
+Use reviewed images, preferably pinned by digest, and update them deliberately.
+A moving `:main` tag is not a pin.
+
+An external example is the
+[Getty Dist::Zilla bundle's provider](https://github.com/Getty/p5-dist-zilla-pluginbundle-author-getty/tree/main/simpici-provider).
+That project documents its supported Perl versions and prerequisites;
+SimpiCI itself has no Dist::Zilla-specific matrix.
+
+## Native daemon
+
+You do not need a hosted CI service. `simpicid` polls the refs you choose,
+detects new revisions and builds them using the shared executor.
+
+From a SimpiCI checkout, with Perl and `cpanm` installed on the host:
+
+```sh
+cpanm --installdeps .
+```
+
+Create a configuration such as `simpici.json`:
+
+```json
+{
+  "root": "./var",
+  "interval": 60,
+  "timeout": 900,
+  "repositories": [
+    {
+      "name": "acme/example",
+      "clone_url": "https://github.com/acme/example.git",
+      "refs": ["refs/heads/main"],
+      "build_initial": true
+    }
+  ]
+}
+```
+
+Replace the name and clone URL with your repository. Its `.cicd` files must
+already be committed. This example uses only settings supported today.
+
+```sh
+# Poll once, including a build of the existing branch tip.
+perl -Ilib bin/simpicid --config simpici.json --once
+
+# Keep polling.
+perl -Ilib bin/simpicid --config simpici.json
+```
+
+- `build_initial: false` records the existing state on the first poll without
+  building it.
+- `refs` is the **polling filter**, not global authorization for other entry
+  points such as the one-shot CLI.
+- `timeout` limits the native executor's runtime.
+- Polling remembers the last observed tip of each ref. In local mode, a change
+  from `A → B → A` can build the same commit again; the dispatcher queue
+  provides durable repository/ref/commit deduplication.
+- `--once` ends a polling cycle. Its exit code does not replace the build
+  status in the run report.
+
+More templates: [local mode](etc/simpici.example.json) and
+[dispatcher with secret grants](etc/simpici.dispatcher.example.json).
+The local template builds SimpiCI itself. Its container jobs also require an
+image target such as `CICD_IMAGE_REPOSITORY=simpici-local`; for a local test
+where publishing is not wanted, also set `CICD_PUBLISH_IMAGE=false`.
+This is a convention of those repository scripts, not a security boundary.
+
+### Build one commit
+
+`simpici` expects a normalized event, not just a local path:
+
+```sh
+perl -Ilib bin/simpici --event event.json --root var
+```
+
+Required event fields are `source`, `event`, `repository`, `clone_url`, `ref`
+and `commit`. The commit must be a full lowercase 40- or 64-character hex OID;
+the ref must be canonical, such as `refs/heads/main`.
+The [operations guide](deploy/README.md) includes an example that generates
+an event file.
+
+The one-shot CLI is a trusted operator entry point. It does not automatically
+read the daemon configuration or enforce its ref filters. It is not a
+replacement for the dispatcher's queue/retry semantics either.
+
+### Separate build VM and reports
+
+For a separate build machine, `simpicid` uses `dispatcher` mode. The worker
+retrieves jobs over a restricted outbound SSH connection.
+[Keys, grants, mounts and recovery](deploy/README.md) belong in the operations
+guide, not in build scripts.
+
+Native runs write public report JSON and logs under `<root>/public/`.
+**Local logs are not automatically redacted.** Review their contents before
+publishing them. Only the worker/dispatcher path redacts secret values assigned
+by the dispatcher.
+
+The bundled `compose.yaml` is an **optional viewer example using a Podman
+socket**, not a complete daemon stack. It requires, among other things,
+`${XDG_RUNTIME_DIR}/podman/podman.sock`, suitable mounts and read access for
+the web server. Once those are configured:
+
+```sh
+docker compose up -d
+```
+
+The viewer is then available at <http://127.0.0.1:8080/>. See the
+[operations guide](deploy/README.md) for mounts, private file permissions and
+alternatives. Hosted runs do not appear there automatically. Never publish
+internal events, queue data, credentials or checkouts alongside reports.
+
+## Forgejo and GitLab
+
+**Forgejo Actions** can invoke the same composite action. A complete example
+and runner requirements are in the [operations guide](deploy/README.md).
+On a persistent self-hosted VM in particular, do not give untrusted PRs access
+to Docker or production networks.
+
+**GitLab repositories** can already be built by the native daemon using their
+Git clone URL. This does not mean a dedicated GitLab hosted entry point or
+automatic branch-protection queries are implemented. An accessible Git server
+alone does not provide branch-protection metadata.
+
+## Branch protection and policy
+
+The following table describes the **agreed target semantics**, not current
+runtime behavior:
+
+| Metadata state | Intended default |
+| --- | --- |
+| No protected branches | Observed branches are treated equally; no mandatory policy. |
+| Protected branches exist | Without an additional policy, only protected branches run. |
+| Valid policy on the protected default branch | May admit additional branches. |
+| Protection status unknown or query failed | No silent switch to unprotected mode. |
+
+The repository-wide policy is to come from the default branch. When branch
+protection is used, that branch must also be protected. Multiple protected
+branches do not mean "the newest wins"; no `policy_branch` setting is planned.
+
+Static branch metadata, forge adapters and a trusted JSON URL are proposed
+alternative sources for the native daemon. The new settings are **not yet
+available**. The [architecture decision](docs/superpowers/specs/2026-09-21-branch-policy-design.md)
+distinguishes agreed decisions from proposed extensions.
+
+## Development
+
+```sh
+prove -lr t/
+```
+
+Before a release, also run:
+
+```sh
+dzil test
+```
+
+`prove` is the normal development path; release tests require Dist::Zilla
+and the distribution's dependencies. CLI help is available directly from
+a checkout:
+
+```sh
+perl -Ilib bin/simpicid --help
+perl -Ilib bin/simpici --help
+```
+
+The internals are deliberately small: event normalization, filesystem store,
+polling and runner, with an optional queue, dispatcher and worker. POD in
+`lib/SimpiCI/` documents the Perl interfaces.
+
+## Links and license
+
+- [GitHub](https://github.com/Getty/simpici)
+- [Forgejo](https://src.ci/cindustries/simpici)
+- Container images: `raudssus/simpici` and `ghcr.io/getty/simpici`
+- [Deployment](deploy/README.md) · [Cookbook](docs/cookbook.md)
 
 Copyright 2026 Torsten Raudssus. SimpiCI is available under the same terms as
-Perl itself.
-
-## Distributed dispatcher and runner
-
-For an isolated build host, set `mode: dispatcher` in the daemon configuration.
-The daemon persists deduplicated jobs; `simpici-worker` pulls them through a
-restricted outbound SSH connection and executes the shared container phases.
-See [deployment instructions](deploy/README.md) and
-[example configuration](etc/simpici.dispatcher.example.json) for worker keys,
-VM network isolation, scoped secret files, mirrors and recovery semantics.
-Windows/native jobs are not part of this execution model.
+Perl itself. See [LICENSE](LICENSE).

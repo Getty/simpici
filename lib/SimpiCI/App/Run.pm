@@ -59,7 +59,9 @@ SimpiCI::App::Run - implementation of the simpici one-shot command
 =head1 DESCRIPTION
 
 Validates one normalized event, allocates a run, checks out the exact commit
-detached, and invokes the shared phased container executor.
+detached, and invokes the shared phased container executor. This trusted
+one-shot entry point does not read daemon configuration or use queue
+deduplication; each invocation allocates a new run.
 
 =head1 METHODS
 
@@ -77,7 +79,7 @@ status. Help and usage errors are handled by L<Pod::Usage>.
 =item B<--event> I<file>
 
 Required event JSON containing C<source>, C<event>, C<repository>, C<clone_url>,
-C<ref>, and a full 40- or 64-hex C<commit>.
+C<ref>, and a full 40- or 64-character lowercase hexadecimal C<commit>.
 
 =item B<--root> I<directory>
 
@@ -90,7 +92,8 @@ Maximum executor runtime. Defaults to 3600 seconds.
 =item B<--runner> I<file>
 
 Executor path. Defaults to C<bin/simpici-executor> in a source checkout or the
-installed C<simpici-executor> found on C<PATH>.
+installed C<simpici-executor> found on C<PATH>. Use an absolute override path:
+the runner changes into the checkout before execution.
 
 =item B<--help>, B<-h>
 

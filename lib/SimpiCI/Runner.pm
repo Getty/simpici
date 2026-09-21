@@ -158,10 +158,12 @@ SimpiCI::Runner - exact-checkout SimpiCI run supervisor
 
 =head1 SYNOPSIS
 
+  use Path::Tiny qw( path );
+
   my $runner = SimpiCI::Runner->new(
     store         => $store,
     timeout       => 3600,
-    runner_script => 'action/run.sh'
+    runner_script => path('/opt/simpici/bin/simpici-executor')
   );
   my $report = $runner->run($event);
 
@@ -170,7 +172,7 @@ SimpiCI::Runner - exact-checkout SimpiCI run supervisor
 =head2 run
 
 Allocates a run, checks out the event's exact commit detached, invokes the
-shared container executor, writes sanitized public state and logs, and returns
-a report hash.
+shared container executor, writes public report JSON excluding C<payload> and
+C<clone_url>, captures unfiltered logs, and returns a report hash.
 
 =cut
