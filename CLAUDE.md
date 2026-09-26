@@ -26,5 +26,6 @@ Before editing a linked skill, load `manage-skills` and preserve its inode;
 never use an atomic-save editor or replace hardlinks with copies.
 
 Behavior-relevant implementation, refactoring and tests belong with the
-`simpici-worker` agent. Run `prove -lr t/` during development and `dzil test`
+`simpici-worker` agent. Commits, `Changes`, closing karr cards and the pre-release
+audit belong with `simpici-release-manager` — it is the only role that commits. Run `prove -lr t/` during development and `dzil test`
 before release.
