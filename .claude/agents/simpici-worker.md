@@ -2,7 +2,6 @@
 name: simpici-worker
 description: Implement, refactor, debug and test behavior in SimpiCI. Leaves a commit-ready tree; never commits — commits belong to simpici-release-manager.
 model: inherit
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - simpici-core
