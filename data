@@ -1,0 +1,30 @@
+---
+claimed_at: 2026-10-04T06:07:47Z
+claimed_by: simpici
+class: standard
+completed: 2026-10-04T06:07:47Z
+created: 2026-10-04T04:37:13Z
+id: 23
+priority: high
+started: 2026-10-04T06:07:47Z
+status: done
+tags:
+- worker
+- runner
+title: 'Worker-Robustheit: abgelehnte Completion blockiert, Signal gilt als Erfolg'
+updated: 2026-10-04T06:07:47Z
+---
+
+Befunde aus k20 (2026-10-04, nur gelesen): (D) Eine vom Dispatcher abgelehnte Completion (expired / stale claim) bleibt als completion.json liegen und blockiert den Worker in jedem Durchlauf; betrifft jetzt auch gemeldete Abbrüche. Ziel: abgelehnte Completion beiseitelegen (z. B. nach rejected/ verschieben, Log-Zeile) und weiterarbeiten. (E) Runner.pm ~147 liefert bei einem per Signal beendeten Kindprozess exit_code 0; ein per Signal beendeter Checkout-Schritt gilt als gelungen und der nächste startet. Ziel: Signal = Fehlschlag (128+Signal), Lauf bricht ab. Tests für beide.
+
+2026-10-04 05:54 Start: Karte und Code gelesen. Plan D: der Dispatcher beantwortet eine endgueltig abgelehnte Completion mit der festen Antwort {"rejected": Grund} und Exit 0; Exit != 0 oder keine lesbare Antwort bleibt Transportfehler und wird wiederholt. Worker verschiebt completion.json atomar nach rejected/<run>.json. Plan E: Runner meldet ein Signal als 128+Signal, die Checkout-Kette bricht ab. Befund beim Sichten (gehoert zu D, Transportfehler): endet ssh, bevor es eine grosse Completion gelesen hat, stirbt der Worker an SIGPIPE (Exit 141) statt zu wiederholen - wird mit behoben.
+
+2026-10-04 06:01 Tests zuerst, rot gegen den Code von HEAD (neue Tests gegen lib/bin des letzten Commits): t/32-runner-signal.t 7/8 Subtests rot (u. a. Checkout-Schritt per KILL beendet: Executor lief trotzdem, state success, exit_code 0); t/66-completion-refusal.t 5/7 rot (Dispatcher->request stirbt mit 'SimpiCI::Queue expired claim' statt zu antworten); t/74-worker-rejected-completion.t 9/10 rot (completion.json bleibt, der naechste Lauf wird nie geclaimt); t/90-transport.t 3/20 rot (echter simpici-worker: 'dispatcher connection failed' in jedem Durchlauf; ssh ohne Verbindung plus 2 MiB Completion: Exit 141 SIGPIPE). Nach der Umsetzung alle gruen.
+
+2026-10-04 06:05 Entscheidungen: (1) Unterscheidung per fester Antwort, nicht per Exit-Code: simpici-dispatch antwortet auf eine endgueltig abgelehnte Completion mit {"rejected":"<Grund>"} und Exit 0; Gruende nur 'unknown run', 'stale claim', 'expired claim' (SimpiCI::Queue->refusal_reasons), sonst kein Schluessel, kein Pfad. Ein Exit-Code allein waere mehrdeutig (ssh nutzt 255, ein Perl-Abbruch beliebige errno-Werte). Alles andere - Exit != 0, keine oder unvollstaendige Antwort, anderer Wortlaut - bleibt Transportfehler: completion.json bleibt und wird wiederholt. (2) Schon abgeschlossener Lauf mit passendem Worker+Token bleibt wie bisher eine Annahme (Report), keine Ablehnung. (3) Completion mit unzulaessigem result/log fuer einen noch geleasten Lauf bleibt Fehler, keine Ablehnung (kein Worker dieser Version erzeugt sie). (4) rejected/: completion.json wird per rename nach rejected/<run>.json verschoben, unveraendert wie gesendet (Ergebnis, Claim-Token, vom Worker bereits geschwaerztes Log, max. 4 MiB), 0600 in 0700; erneute Ablehnung desselben Laufs ersetzt die Datei. SimpiCI liest und loescht dort nichts: eine Datei pro abgelehntem Lauf, der Operator raeumt auf (dokumentiert in deploy/README.md, inkl. erneutem Zustellen per Zurueckschieben bei gestopptem Worker). Der Grund steht nur in der stderr-Zeile, nicht in der Datei, damit das Verschieben atomar bleibt. (5) Queue->finish croakt unveraendert; neu Queue->refusal, das der Dispatcher vor dem finish fragt. (6) Runner: Signal = state signalled, exit_code 128+Signal; ein Kind ohne lesbaren Status (waitpid -1) ist ein croak statt eines Ergebnisses.
+
+2026-10-04 06:05 Also found (nicht umgesetzt, ausserhalb der Karte): (F1) Log-Zeichen oberhalb U+00FF kommen im oeffentlichen Log des Dispatchers doppelt kodiert an, und der Worker warnt 'Wide character in print': Worker->_request und simpici-dispatch kodieren/dekodieren das JSON auf der Leitung nicht als UTF-8. (F2) Der Worker kuerzt das Log auf 4 MiB Zeichen, simpici-dispatch begrenzt die Anfrage auf 8 MiB Bytes: ein Log mit vielen Mehrbyte- oder Steuerzeichen (4 MiB x 3 Byte = 12,5 MiB) wird mit 'request too large' und Exit != 0 abgewiesen, der Worker wiederholt endlos und ist blockiert wie vor dieser Karte, nur ohne Ablehnungsantwort. Sauberer Fix: Worker kuerzt nach kodierten Bytes; haengt mit F1 zusammen. (F3) Eine unlesbare completion.json (von Hand veraendert, kein JSON) laesst once in jedem Durchlauf croaken und blockiert ebenfalls. (F4) simpici-worker --once endet auch dann mit Exit 0, wenn der Durchlauf fehlschlug. Geprueft und ohne Befund zur Fehlerklasse E: Worker->_request, Source::GitPoll->_capture (ganzer Status != 0 ist Fehler), bin/simpici-executor (pipefail, rc-Dateien, fehlende rc-Datei = 1), bin/simpici-worker, bin/simpici-dispatch.
+
+2026-10-04 06:06 Done: (D) simpici-dispatch beantwortet eine endgueltig abgelehnte Completion mit {"rejected":Grund} und Exit 0 (Queue->refusal: unknown run / stale claim / expired claim); der Worker verschiebt completion.json nach rejected/<run>.json, schreibt eine Zeile auf stderr und claimt im naechsten Durchlauf weiter. Transportfehler (keine Verbindung, Exit != 0, unvollstaendige Antwort) lassen die Completion liegen und werden wiederholt; ein ssh, das vor dem Lesen endet, toetet den Worker nicht mehr per SIGPIPE. (E) Runner meldet ein Signal als signalled mit exit_code 128+Signal, die Checkout-Kette bricht ab, der Executor startet nicht. Tests: t/32-runner-signal.t, t/66-completion-refusal.t, t/74-worker-rejected-completion.t neu, t/90-transport.t erweitert, t/63 an die Antwort angepasst; alle vorher rot gesehen. Doku: README.md, deploy/README.md, docs/executor.md, POD von Queue, Dispatcher, Worker, Runner, simpici-worker, simpici-dispatch. prove -lr t/: 30 Dateien, 912 Tests, PASS. Nicht committet, Changes unberuehrt; neue Tests im Index.
+
+2026-10-04 06:07 Committed as fc73459
