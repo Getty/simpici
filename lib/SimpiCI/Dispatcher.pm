@@ -12,6 +12,17 @@ use namespace::autoclean;
 has queue => (is => 'ro', isa => InstanceOf['SimpiCI::Queue'], required => 1);
 has config => (is => 'ro', isa => HashRef, required => 1);
 
+# A grant ref is either an exact ref or "refs/<path>/*", which matches every
+# ref below that path. Anything else containing "*" is a configuration error.
+sub _ref_matches {
+  my ( $self, $pattern, $ref ) = @_;
+  return $pattern eq $ref if index($pattern, '*') < 0;
+  croak __PACKAGE__.' invalid ref pattern: '.$pattern
+    unless $pattern =~ m{\Arefs/[^*]+/\*\z};
+  my $prefix = substr($pattern, 0, -1);
+  return length($ref) > length($prefix) && index($ref, $prefix) == 0;
+}
+
 sub _secrets {
   my ( $self, $event ) = @_;
   my %phases;
@@ -19,7 +30,7 @@ sub _secrets {
     next unless $repo->{name} eq $event->{repository}
       && $repo->{clone_url} eq $event->{clone_url};
     for my $secret (@{$repo->{secrets} // []}) {
-      next unless grep { $_ eq $event->{ref} } @{$secret->{refs} // []};
+      next unless grep { $self->_ref_matches($_, $event->{ref}) } @{$secret->{refs} // []};
       next unless grep { $_ eq $event->{event} } @{$secret->{events} // []};
       next if $event->{event} eq 'pull_request';
       next if $secret->{sources} && !grep { $_ eq $event->{source} } $secret->{sources}->@*;
@@ -79,7 +90,9 @@ SimpiCI::Dispatcher - fixed claim/finish protocol
 
 Worker identity comes from the administrator's SSH forced command, never from
 the request. Secret references are resolved on the dispatcher, scoped to exact
-repository, ref, event, optional source and publish/deploy phase. Public reports
-are reconstructed from accepted events; worker-supplied metadata is discarded.
+repository, event, optional source and publish/deploy phase. A grant ref is an
+exact ref or C<refs/E<lt>pathE<gt>/*>, which matches every ref below that path;
+any other use of C<*> is rejected. Public reports are reconstructed from
+accepted events; worker-supplied metadata is discarded.
 
 =cut

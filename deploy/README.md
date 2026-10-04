@@ -192,7 +192,12 @@ VMware is one possible VM environment, not a SimpiCI protocol requirement.
 A grant is not a general environment file for all jobs:
 
 - The repository name **and clone URL** must match.
-- `refs` and `events` are exact lists; empty or missing lists grant nothing.
+- `events` is an exact list. `refs` lists exact refs or patterns of the form
+  `refs/<path>/*`, which match every ref below that path (`refs/tags/*` covers
+  each release tag). `*` anywhere else is rejected as a configuration error.
+  Empty or missing lists grant nothing.
+- A pattern on `refs/heads/*` hands the secret to every branch that is polled.
+  Prefer exact branch names and reserve patterns for tags.
 - `sources` can further restrict the source.
 - `phases` may contain only `publish` and `deploy`.
 - Pull-request events receive no grants.
