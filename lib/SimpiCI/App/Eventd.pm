@@ -185,9 +185,17 @@ recorded for it is treated the same way, with its own reason:
   simpicid: repository owner/project (https://example/owner/project.git) not polled: remote returned no refs, keeping recorded tips: 2 in state/repositories/<id>.json
 
 This is what a mirror gives that was set up again and is not synchronised
-yet, and it must not turn its recorded tips into new ones. If the refs are
-gone for good, remove the repository from the configuration or delete the
-named file below the state root; the repository then counts as never read.
+yet. Its recorded tips stay, so refs that return where they were build
+nothing. If the refs are gone for good, remove the repository from the
+configuration or delete the named file below the state root; the repository
+then counts as never read.
+
+Refs that disappear while others stay are not reported. Each keeps its last
+tip in the state and starts no run; back on that commit it builds nothing, on
+another commit it is built like a ref that moved. Only a ref that was never
+recorded is new. The state therefore holds every ref that was ever observed
+for the repository and drops none by itself, see
+L<SimpiCI::Source::GitPoll/poll>.
 
 A repository that has no refs at all and nothing recorded is not polled
 either:

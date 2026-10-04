@@ -67,7 +67,9 @@ sub poll {
       commit     => $commit
     ));
   }
-  $self->store->write_json($self->_state_file, $observed);
+  # A ref the remote no longer shows keeps its last tip: back on that commit
+  # it is no event, and the state never forgets a ref by itself.
+  $self->store->write_json($self->_state_file, { $previous->%*, $observed->%* });
   return \@reports;
 }
 
@@ -75,7 +77,8 @@ sub rejection {
   my ( $self, $observed ) = @_;
 
   # A reachable remote without one usable ref says nothing about the recorded
-  # tips: saved, it would make every one of them new once they are back.
+  # tips. Merged, it would leave them as they are too; refused, it is told
+  # apart from a poll that found nothing new.
   return if $observed->%*;
   my $recorded = keys( ( $self->_recorded // {} )->%* );
   return unless $recorded;
@@ -282,8 +285,9 @@ ends it.
   my $reports = $poller->poll;
   my $reports = $poller->poll($observed);
 
-Compares an observation with persisted state, runs accepted changes, saves the
-observation, and returns an array reference of generated reports. Without an
+Compares an observation with persisted state, runs accepted changes, merges
+the observation into that state, and returns an array reference of generated
+reports. Without an
 argument it calls L</observe> itself, so an unreadable remote croaks before
 anything is run or saved. An observation that L</rejection> refuses croaks at
 the same point, with that reason. A caller that has to tell an unusable
@@ -295,20 +299,32 @@ Whether a repository has refs at all is known to L</observe> alone: an empty
 hash that did not come from it is saved as the baseline of a repository
 without recorded state, without a second look at the remote.
 
+The state is the last tip of every ref that was ever observed for the
+repository, not the last observation. A ref that an observation lacks keeps
+its recorded tip and starts no run. Observed again, it is compared with that
+tip like any other ref: on the same commit it is no event, on another commit
+it is run. Only a ref that was never recorded is new, and with recorded state
+it is run whatever C<build_initial> says. Nothing takes a ref out of the
+state, be it deleted in the repository or no longer matched by the configured
+C<refs>: the state grows with every ref name the repository has had, and
+removing its file, see L</rejection>, forgets all of them at once.
+
 =head2 rejection
 
   my $reason = $poller->rejection($observed);
 
-Returns why an observation must not replace the recorded tips, or nothing if
-it may. The one reason is an observation without refs while tips are
-recorded:
+Returns why an observation must not be polled, or nothing if it may. The one
+reason is an observation without refs while tips are recorded:
 
   remote returned no refs, keeping recorded tips: 2 in state/repositories/<id>.json
 
 Exit status 0 with nothing to show is what C<git ls-remote> gives for a
 reachable repository that has none of the configured refs, such as a mirror
-before its synchronisation. Saved, it would turn every recorded tip into a
-new one on its return, tags that were never built included. Without recorded
+before its synchronisation. L</poll> would keep the recorded tips against it
+as against any observation that lacks refs; it is refused so that a caller
+can report a repository that shows none of them instead of taking it for one
+without changes. The number counts every recorded tip, those of refs that are
+gone or no longer configured included. Without recorded
 tips the same observation is acceptable: it is the baseline of a repository
 that has refs, but no matching one yet; L</observe> does not return it for a
 repository without any. The path is relative to the store root. Removing that

@@ -72,8 +72,9 @@ that is valid today. Important details:
 - `interval` is the pause after the entire polling cycle. Local builds run
   serially; multiple repositories are not built concurrently.
 - `refs` filters the Git polling query, not arbitrary manual inputs.
-- `build_initial: false` skips only the initial baseline. Refs that appear
-  later are built; deletion alone does not start a run.
+- `build_initial: false` skips only the initial baseline. Refs that first
+  appear later are built; deletion alone does not start a run, and neither
+  does a deleted ref that returns on the commit recorded for it.
 - `repositories` is a list of objects, each with a `name` and a `clone_url`
   that are nonempty strings. `simpicid` checks this when it starts, in local
   and in dispatcher mode, and exits before it polls anything:
@@ -165,9 +166,11 @@ that is valid today. Important details:
   simpicid: repository acme/example (https://github.com/acme/example.git) not polled: remote returned no refs, keeping recorded tips: 2 in state/repositories/<id>.json
   ```
 
-  Saving the empty answer would make every tip new on its return, including
-  tags that were never built and would then receive what a `refs/tags/*`
-  grant gives. The line and the exit status 1 of `--once` repeat as long as
+  The recorded tips stay as they are, so refs that return where they were
+  build nothing, including tags that were never built and would otherwise
+  receive what a `refs/tags/*` grant gives. The number counts every recorded
+  tip, those of refs that are gone or that `refs` no longer matches included.
+  The line and the exit status 1 of `--once` repeat as long as
   the answer stays empty. If the refs are gone for good, remove the repository
   from the configuration, or delete the named file below `root`: the
   repository then counts as never read, and its next poll is a first one.
@@ -204,9 +207,24 @@ that is valid today. Important details:
   are built as new when they arrive and receive what their grants give, since
   a tag that arrives late looks like a tag that was just pushed. **Let a
   mirror finish its first synchronisation before you add it to the
-  configuration or start the daemon.** The same holds afterwards: a repository
-  that loses only some of its refs forgets those and treats them as new if
-  they come back.
+  configuration or start the daemon.**
+- A ref that was recorded once is not forgotten. If only some refs disappear,
+  such as every tag of a mirror that still shows its branch, or a branch that
+  was deleted, each keeps its last tip in the state and no run starts. When
+  such a ref is back on the recorded commit, nothing is built; on another
+  commit it is built once, like a ref that moved. Only a ref that was never
+  recorded is new, which is why the tags of the half-filled mirror above are
+  built and these are not.
+
+  The state of a repository therefore holds every ref name that was ever
+  observed for it, and it only grows: a ref that was deleted stays in it, and
+  so does one that `refs` no longer matches. A tag that is deleted and set
+  again on the same commit is not built a second time. No command forgets a
+  single ref. Deleting the file of the repository in `state/repositories/`
+  below `root` forgets all of them: the repository then counts as never read,
+  and `build_initial` decides whether its current tips are built. The name of
+  that file is derived from name and clone URL of the repository; the daemon
+  shows it only in the `keeping recorded tips` line above.
 - Only reading the refs is tolerated. A run that cannot be started, an
   unwritable state root or queue, an unusable entry of `repositories`, a
   refused clone URL and an unusable grant end the daemon.

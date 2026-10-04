@@ -405,7 +405,9 @@ perl -Ilib bin/simpicid --config simpici.json
   one repository; it defaults to 60 seconds.
 - Polling remembers the last observed tip of each ref. In local mode, a change
   from `A → B → A` can build the same commit again; the dispatcher queue
-  provides durable repository/ref/commit deduplication.
+  provides durable repository/ref/commit deduplication. A ref that disappears
+  keeps its tip: back on the same commit it builds nothing, on another commit
+  it is built. The state never drops a ref by itself.
 - `--once` ends a polling cycle. Its exit code does not replace the build
   status in the run report.
 - A repository whose refs cannot be read, or are not read within

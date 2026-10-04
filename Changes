@@ -20,7 +20,11 @@
     that is only partly synchronised is not recognised and must be complete
     before it is polled. simpicid --once polls every repository and exits
     with 1 if one was not polled. SimpiCI::Source::GitPoll offers observe and
-    rejection; poll accepts an observation.
+    rejection; poll accepts an observation. The poller merges an observation
+    into the recorded tips instead of replacing them: a ref that disappears
+    while others stay keeps its last tip, so back on the same commit it
+    starts no run, on another commit it does. The state of a repository never
+    drops a ref by itself; deleting its file forgets all of them.
   - simpicid gives up on a repository whose refs are not read within
     ls_remote_timeout seconds (new top-level setting, default 60, shared by
     all queries made for one repository in a cycle), logs it as
