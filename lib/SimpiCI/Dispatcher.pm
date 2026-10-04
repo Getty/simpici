@@ -210,6 +210,12 @@ sub request {
   if ($operation eq 'finish') {
     my $run = $request->{run};
     croak __PACKAGE__.' invalid run' unless defined $run && $run =~ /\A[1-9][0-9]*\z/;
+    my $token = $request->{token} // '';
+    # Answered, not croaked, and before anything else of the request is
+    # looked at: the worker would send again what failed, and this can never
+    # be accepted. The snapshot stays; it may belong to the lease of another.
+    my $refusal = $self->queue->refusal($worker, $run, $token);
+    return { rejected => $refusal } if $refusal;
     my $log = $request->{log} // '';
     croak __PACKAGE__.' invalid log' if ref $log || length($log) > 4 * 1024 * 1024;
     my $snapshot = $self->_snapshot($run);
@@ -218,9 +224,10 @@ sub request {
     $log = $snapshot->is_file
       ? $self->redact($log, $self->queue->store->_json->decode($snapshot->slurp_utf8))
       : $self->_withheld_log($run);
-    my $report = $self->queue->finish($worker, $run, $request->{token} // '',
-      $request->{result}, $log);
-    # Only now: a completion that was refused, or one the dispatcher died in,
+    # A lease that ran out since it was asked about croaks here, and is
+    # answered as a refusal when the worker sends the completion again.
+    my $report = $self->queue->finish($worker, $run, $token, $request->{result}, $log);
+    # Only now: a completion that failed, or one the dispatcher died in,
     # still has its lease and is redacted from the snapshot when it returns.
     $self->_remove_snapshot($snapshot);
     return $report;
@@ -255,6 +262,33 @@ the reason, never a secret value. A claim runs this check before it takes a
 lease, so a configuration error leaves queued work queued; the values read by
 that check are the ones handed out. A completion is accepted without the
 check: it needs only the queue and the secret snapshot of its claim.
+
+=head2 A completion that is refused
+
+A worker keeps a completion until it has an answer to it, and sends it again
+after every request that failed. A completion that can never be accepted
+therefore has to be answered: L</request> returns
+
+  { rejected => 'expired claim' }
+
+for it and croaks for everything else that goes wrong. The reason is one of
+L<SimpiCI::Queue/refusal_reasons>, a fixed phrase and the only key of the
+answer: nothing of the run, of the queue or of this installation goes to a
+worker that is refused. The worker stops sending the completion and keeps it
+aside, see L<SimpiCI::Worker/Delivering a completion>.
+
+The queue is asked before anything else of the completion is looked at, so a
+refused completion is refused whatever its result or log are. Nothing is
+published or recorded for it, and the secret snapshot of the run is not
+removed by it: a completion with a foreign token must not take the snapshot
+from the worker that holds the lease.
+
+A completion of a run that already has its result, from the worker and token
+that completed it, is not refused. It is answered with the report again, as
+the retry after a lost answer needs it.
+
+A completion of a leased run with a result or log the protocol does not
+allow is an error, not a refusal: no worker of this version sends one.
 
 =head2 Secret snapshot of a claim
 
@@ -319,7 +353,10 @@ because the executor only passes it through.
   my $response = $dispatcher->request($worker, { operation => 'claim' });
 
 Serves one C<claim> or C<finish> request for the given worker identity, after
-it called L</remove_stale_snapshots>.
+it called L</remove_stale_snapshots>. A C<claim> returns the claim, or an
+empty hash if nothing is queued. A C<finish> returns the report of the run,
+or C<{ rejected =E<gt> REASON }> for L</A completion that is refused>.
+Croaks for any other request and for every error.
 
 =head2 remove_stale_snapshots
 

@@ -49,6 +49,31 @@ with a fixed config and worker identity and disable all SSH forwarding.
 A local lock prevents overlapping worker processes. Completed work is saved
 before upload and retried without rebuilding when the connection fails.
 
+A saved completion, C<completion.json> below C<--root>, is sent again in
+every cycle until the dispatcher answers, and no work is claimed while one
+waits. A connection that fails, a dispatcher that ends with an error and an
+answer that did not arrive whole are written to standard error as
+
+  simpici-worker: SimpiCI::Worker dispatcher connection failed at ...
+  simpici-worker: SimpiCI::Worker invalid dispatcher response at ...
+
+and leave the file where it is. A completion the dispatcher refuses for
+good, because the lease of the run is over, the run is claimed under another
+worker name or token, or the dispatcher does not know the run, is not sent
+again. It is moved to C<rejected/E<lt>runE<gt>.json> below C<--root>, one
+line names it on standard error,
+
+  SimpiCI::Worker completion of run 7 rejected by the dispatcher: expired claim; kept as rejected/7.json
+
+and the next cycle claims work. The file is the completion as it was sent:
+the result, the claim token and the log, in which the secret values of the
+claim are redacted. C<simpici-worker> never reads or removes a file below
+C<rejected/>; see L<SimpiCI::Worker/Delivering a completion>.
+
+A run whose checkout or executor is ended by a signal is reported with the
+state C<signalled> and the exit code 128 plus the signal, never as a
+success; see L<SimpiCI::Runner/run>.
+
 A claim the worker cannot execute, such as an event it refuses, is reported
 to the dispatcher as a failed run with exit code 125. The reason is the last
 line of the uploaded log and is also written to standard error, without the

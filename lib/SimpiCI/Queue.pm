@@ -91,10 +91,39 @@ sub claim {
 sub leased {
   my ( $self, $run ) = @_;
   croak __PACKAGE__.' invalid run' unless defined $run && $run =~ /\A[1-9][0-9]*\z/;
-  my $file = $self->store->root->child('queue', $run.'.json');
-  return 0 unless $file->is_file;
-  my $record = JSON::MaybeXS->new->decode($file->slurp_utf8);
+  my $record = $self->_record($run) or return 0;
   return ($record->{state} // '') eq 'running' && ($record->{expires} // 0) > time ? 1 : 0;
+}
+
+# Every reason a completion is refused for good. Each is sent to the worker
+# as it stands here, so it says nothing of the run or of the dispatcher.
+sub refusal_reasons { ( 'unknown run', 'stale claim', 'expired claim' ) }
+
+sub _record {
+  my ( $self, $run ) = @_;
+  my $file = $self->store->root->child('queue', $run.'.json');
+  return unless $file->is_file;
+  return JSON::MaybeXS->new->decode($file->slurp_utf8);
+}
+
+# The reason this worker and token can never complete the run, or nothing.
+# A run that has its result is not refused to the claim that completed it.
+sub _refusal {
+  my ( $self, $record, $worker, $token ) = @_;
+  return 'unknown run' unless $record;
+  return 'stale claim' unless ($record->{worker} // '') eq $worker
+    && ($record->{token} // '') eq $token;
+  return if $record->{result};
+  return 'expired claim' unless $record->{state} eq 'running' && $record->{expires} > time;
+  return;
+}
+
+sub refusal {
+  my ( $self, $worker, $run, $token ) = @_;
+  croak __PACKAGE__.' invalid run' unless defined $run && $run =~ /\A[1-9][0-9]*\z/;
+  my $lock = $self->_lock;
+  my $record = $self->_record($run);
+  return $self->_refusal($record, $worker, $token // '');
 }
 
 sub finish {
@@ -104,14 +133,10 @@ sub finish {
     && ($result->{state} // '') =~ /\A(?:success|skipped|failed|timed_out|signalled)\z/
     && defined $result->{exit_code} && $result->{exit_code} =~ /\A[0-9]{1,3}\z/;
   my $lock = $self->_lock;
-  my $file = $self->store->root->child('queue', $run.'.json');
-  croak __PACKAGE__.' unknown run' unless $file->is_file;
-  my $record = JSON::MaybeXS->new->decode($file->slurp_utf8);
-  croak __PACKAGE__.' stale claim' unless ($record->{worker} // '') eq $worker
-    && ($record->{token} // '') eq $token;
+  my $record = $self->_record($run);
+  my $refusal = $self->_refusal($record, $worker, $token);
+  croak __PACKAGE__.' '.$refusal if $refusal;
   return $self->_save($record) if $record->{result};
-  croak __PACKAGE__.' expired claim' unless $record->{state} eq 'running'
-    && $record->{expires} > time;
   $record->{state} = $result->{state};
   $record->{result} = { state => $result->{state}, exit_code => 0 + $result->{exit_code} };
   my $target = $self->store->root->child('public', 'runs', $run.'.log');
@@ -168,12 +193,48 @@ interrupted or unknown run, and for a run whose lease has expired but that no
 claim has marked as interrupted yet. A run that is not leased after it was
 claimed never becomes leased again. Croaks unless C<$run> is a run number.
 
+=head2 refusal
+
+  my $reason = $queue->refusal($worker, $run, $token);
+
+Returns why this worker and token can never complete the run, or nothing if
+they can or already did:
+
+=over 4
+
+=item C<unknown run>
+
+The queue has no such run.
+
+=item C<stale claim>
+
+The run is claimed by another worker or with another token, or not claimed
+at all.
+
+=item C<expired claim>
+
+The lease is over: it ran out, or a later claim marked the run as
+interrupted.
+
+=back
+
+None of them changes with time or with another attempt, which is what tells
+a refusal from an error. A run that has its result is not refused to the
+worker and token that completed it: L</finish> returns its report again.
+Croaks unless C<$run> is a run number.
+
+=head2 refusal_reasons
+
+Lists the reasons L</refusal> gives. They are fixed phrases without a value
+of the run or of the dispatcher, because L<SimpiCI::Dispatcher> sends them to
+the worker as they are.
+
 =head2 finish
 
   my $report = $queue->finish($worker, $run, $token, $result, $log);
 
 Records the result of a leased run for the worker and token that claimed it
-and publishes its log. Croaks for another worker or token, for an unknown run
-and for an expired lease.
+and publishes its log. Croaks with the reason of L</refusal> for a completion
+that is refused, and with C<invalid result> for a result that is none.
 
 =cut

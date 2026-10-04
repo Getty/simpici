@@ -62,6 +62,22 @@ keeps its file until the next request. A completion that finds no file for a
 run it can still complete is recorded with a log of one line saying that the
 log was withheld, see L<SimpiCI::Dispatcher/Secret snapshot of a claim>.
 
+A request that was served is answered with one JSON object on standard
+output and the exit status 0. A completion that can never be accepted is
+answered in that way too, with the reason as the only key:
+
+  {"rejected":"expired claim"}
+
+The reasons are C<unknown run>, C<stale claim> for a run claimed by another
+worker name or token, and C<expired claim> for a lease that is over. The
+worker takes this answer as final, stops sending the completion and keeps it
+aside. Every other failure, such as a configuration that cannot be read, a
+queue that cannot be locked or written, or a request that is not complete,
+ends the program with a message on standard error and another exit status
+than 0, and the worker sends the request again. An exit status alone never
+says that a completion was refused: C<ssh> uses 255 for a connection it
+could not make.
+
 The clone URLs of the configuration are not checked here. This program reads
 no remote, and a queued event passed L<SimpiCI::Event> when it was enqueued;
 C<simpicid> refuses a clone URL with credentials before it polls.

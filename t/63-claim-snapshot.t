@@ -128,7 +128,7 @@ subtest 'a lease that expires' => sub {
   is $dispatcher->request('other', { operation => 'claim' }), {}, 'the next claim finds no work';
   is record($root, 1)->{state}, 'interrupted', 'marks the run interrupted';
   ok !$root->child('claims/1.json')->exists, 'and removes its snapshot';
-  like dies { $dispatcher->request('vm', finish($claim)) }, qr/expired claim/,
+  is $dispatcher->request('vm', finish($claim)), { rejected => 'expired claim' },
     'the late completion is refused';
   ok !$root->child('public/runs/1.log')->exists, 'and publishes no log';
   unlike everything_below($root), qr/\Q$value\E/, 'nothing holds the value any more';
@@ -139,7 +139,7 @@ subtest 'a late completion is the first request after the lease expired' => sub 
   enqueue($queue);
   my $claim = $dispatcher->request('vm', { operation => 'claim' });
   expire($root, 1);
-  like dies { $dispatcher->request('vm', finish($claim)) }, qr/expired claim/, 'it is refused';
+  is $dispatcher->request('vm', finish($claim)), { rejected => 'expired claim' }, 'it is refused';
   ok !$root->child('claims/1.json')->exists, 'and the snapshot is removed all the same';
   unlike everything_below($root), qr/\Q$value\E/, 'nothing holds the value any more';
 };
@@ -164,7 +164,7 @@ subtest 'the snapshots of other runs' => sub {
   $dispatcher->request('vm2', finish($claim[1]));
   ok $root->child('claims/1.json')->is_file, 'a completion leaves the snapshot of a leased run';
   ok !$root->child('claims/2.json')->exists, 'and removes its own';
-  like dies { $dispatcher->request('vm1', finish($claim[0], token => 'f' x 64)) }, qr/stale claim/,
+  is $dispatcher->request('vm1', finish($claim[0], token => 'f' x 64)), { rejected => 'stale claim' },
     'a completion with the wrong token is refused';
   ok $root->child('claims/1.json')->is_file, 'and leaves the snapshot: the lease still stands';
   is $dispatcher->request('vm1', finish($claim[0]))->{state}, 'success', 'the owner completes it';

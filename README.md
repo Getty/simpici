@@ -452,6 +452,21 @@ retrieves jobs over a restricted outbound SSH connection.
 [Keys, grants, mounts and recovery](deploy/README.md) belong in the operations
 guide, not in build scripts.
 
+The worker saves the completion of a run before it sends it, and sends it
+again until the dispatcher answers. A dispatcher it cannot reach, or one that
+fails, never ends that retry. A completion the dispatcher refuses for good,
+because the lease of the run is over, the run is claimed under another worker
+name or token, or the run is unknown, is moved to `<root>/rejected/<run>.json`
+on the worker, named in one line on standard error, and the worker goes on
+with the next claim. SimpiCI never removes those files; see
+[a completion that cannot be delivered](deploy/README.md#a-completion-that-cannot-be-delivered).
+
+The runner reports a run as `success`, `skipped`, `failed`, `timed_out` or
+`signalled`; the dispatcher adds `interrupted` for a run whose lease expired.
+A checkout command or an executor that a signal ended is `signalled` with the
+exit code 128 plus the signal, never a success, and the checkout does not go
+on after it.
+
 Native runs write public report JSON and logs under `<root>/public/`.
 **Local logs are not automatically redacted.** Review their contents before
 publishing them. Only the worker/dispatcher path redacts secret values assigned

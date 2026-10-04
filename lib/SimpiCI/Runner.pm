@@ -134,7 +134,8 @@ sub _execute {
     exec { $command[0] } @command or POSIX::_exit(126);
   }
   my $deadline = time + $timeout;
-  while (waitpid($pid, WNOHANG) == 0) {
+  my $waited;
+  while (($waited = waitpid($pid, WNOHANG)) == 0) {
     if (time >= $deadline) {
       kill 'TERM', -$pid;
       sleep 1;
@@ -144,7 +145,14 @@ sub _execute {
     }
     sleep 0.05;
   }
-  return { exit_code => $? >> 8, signal => $? & 127 };
+  my $status = $?;
+  # No status at all, as under an ignored SIGCHLD: how the command ended is
+  # not known, and what is not known is not a result.
+  croak __PACKAGE__.'->_execute lost '.$command[0].': '.$! if $waited < 0;
+  # A command that a signal ended has no exit code, and the 0 in its place
+  # would read as success. It gets the one a shell reports for it.
+  my $signal = $status & 127;
+  return { exit_code => $signal ? 128 + $signal : $status >> 8, signal => $signal };
 }
 
 sub _timestamp {
@@ -176,5 +184,37 @@ SimpiCI::Runner - exact-checkout SimpiCI run supervisor
 Allocates a run, checks out the event's exact commit detached, invokes the
 shared container executor, writes public report JSON excluding C<payload> and
 C<clone_url>, captures unfiltered logs, and returns a report hash.
+
+The checkout is four git commands: C<init>, C<remote add>, C<fetch> and
+C<checkout>. Each starts only after the one before it exited with 0, and the
+executor only after all four did. The first command that ends in another way
+ends the run, and how it ended is the result of the run:
+
+=over 4
+
+=item *
+
+An exit code is the C<exit_code> of the report. From the executor, 0 is the
+state C<success> and 78 is C<skipped>; every other exit code, and every exit
+code but 0 of a git command, is C<failed>.
+
+=item *
+
+A command that a signal ended is the state C<signalled>, with the number of
+the signal as C<signal> and 128 plus that number as C<exit_code>, which is
+what a shell reports for it. It never counts as an exit code of 0.
+
+=item *
+
+A command that is not over within its limit is ended with its process group
+and is the state C<timed_out> with C<exit_code> 124. The limit is C<timeout>
+for the executor, 300 seconds for C<fetch> and 120 for the other git
+commands.
+
+=back
+
+Croaks with C<lost> and the command if the way a command ended cannot be
+read, as in a process that ignores C<SIGCHLD>: the report then stays at
+C<running>, because there is no result to publish.
 
 =cut

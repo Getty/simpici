@@ -169,6 +169,25 @@ Provider or host errors can produce other nonzero codes. The executor has no
 per-job timeout option of its own; the native runner limits the executor's
 runtime. TERM/INT are handled with an attempt to clean up known containers.
 
+The native runner turns the way the executor ended into the state of the run:
+
+| End of the executor | State | `exit_code` in the report |
+| --- | --- | --- |
+| Exit `0` | `success` | `0` |
+| Exit `78` | `skipped` | `78` |
+| Any other exit | `failed` | That exit code |
+| Not over within `timeout` | `timed_out` | `124` |
+| Ended by a signal | `signalled`, with the number as `signal` | `128` plus the signal, such as `137` for `KILL` |
+
+A signal is never an exit code of `0`. The executor turns TERM and INT into
+the exits `143` and `130` itself, so `signalled` is what a signal it cannot
+handle leaves behind, such as the `KILL` of an out-of-memory killer. The same
+rule holds for the four git commands of the native checkout: one that a
+signal ends, or that exits with anything but `0`, ends the run with that
+result, and neither the next command nor the executor starts. A job
+container that a signal ends is an ordinary job failure: Docker reports it
+as the exit `128` plus the signal.
+
 The desired future semantics of the overall status must not be confused with
 this current behavior. The executor produces logs and a summary, but not a
 complete native run lifecycle.
@@ -226,6 +245,12 @@ the complete plan.
   the first worker request after the lease expired. A completion it has no
   snapshot for is recorded with its log withheld. The worker's own copy of a log, under its `<root>/public/runs/`,
   is not redacted.
+- A completion the dispatcher refuses for good, because the lease of the run
+  is over, the run is claimed under another worker name or token, or the run
+  is unknown, is not published anywhere. The worker keeps it as
+  `<root>/rejected/<run>.json`, with the log as it redacted it, and goes on;
+  a completion it could not deliver is sent again instead. See
+  [Operations](../deploy/README.md#a-completion-that-cannot-be-delivered).
 - The local native `<root>/public/runs/index.json` currently contains only the
   most recently written run. The queue projection, by contrast, maintains its run list.
 - Hosted step summaries are not the native static report store.

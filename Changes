@@ -83,6 +83,16 @@
     orphaned secrets/* before it contacts the dispatcher, and a claim whose
     secret is not one NAME=VALUE line fails the run with exit 125.
     SimpiCI::Queue gains leased.
+  - A completion the dispatcher can never accept (unknown run, stale claim,
+    expired claim) is answered with {"rejected": reason}. The worker moves it
+    to rejected/<run>.json, names it in one line on standard error and claims
+    work again; a failed connection or dispatcher keeps completion.json and
+    is retried. An ssh that ends before it read the request no longer kills
+    the worker with SIGPIPE. SimpiCI::Queue gains refusal and
+    refusal_reasons.
+  - A checkout command or executor that a signal ended is reported as
+    signalled with exit code 128 plus the signal; the checkout stops there
+    and the executor does not start.
   - Discover repository jobs from their filenames, execute them in selected
     containers and enforce ordered phase barriers with bounded same-phase
     concurrency (default 2).

@@ -23,6 +23,10 @@ my $ssh = $root->child('bin/ssh');
 $ssh->spew_utf8(<<'SCRIPT');
 #!/usr/bin/env bash
 set -euo pipefail
+# An ssh that cannot connect ends with 255 and has read nothing.
+[[ -z "${TEST_SSH_UNREACHABLE:-}" ]] || exit 255
+# One whose connection breaks after the request passes on part of an answer.
+if [[ -n "${TEST_SSH_ANSWER+set}" ]]; then cat >/dev/null; printf '%s' "$TEST_SSH_ANSWER"; exit 0; fi
 "$TEST_PERL" -I"$TEST_LIB" "$TEST_DISPATCH" --config "$TEST_CONFIG" --worker test-vm \
   | tee -a "$TEST_RESPONSES"
 SCRIPT
@@ -91,5 +95,111 @@ unlike $store->root->child('public/runs/2.log')->slurp_utf8, $private_path,
 unlike $store->root->child('public/runs/2.log')->slurp_utf8,
   qr/transport-secret-value|hunter2-in-url/, 'and no value in it';
 ok !$worker_store->root->child('completion.json')->exists, 'no completion is left to retry';
+
+# From here on simpici-worker delivers a completion that is already saved,
+# as after a restart: what it does with the answer is what is looked at.
+my $json = JSON::MaybeXS->new(canonical => 1);
+my $pending = $worker_store->root->child('completion.json');
+my $rejected = $worker_store->root->child('rejected');
+
+sub claimed_completion {
+  my ( $commit, $log ) = @_;
+  $queue->run(SimpiCI::Event->new(source => 'git-poll', event => 'push', repository => 'fixture',
+    clone_url => '/fixture', ref => 'refs/heads/main', commit => $commit));
+  my $claim = $worker->_request({ operation => 'claim' });
+  my $completion = { operation => 'finish', run => $claim->{run}, token => $claim->{token},
+    result => { state => 'success', exit_code => 0 }, log => $log };
+  $pending->spew_utf8($json->encode($completion));
+  return $completion;
+}
+
+sub worker_once {
+  my $output = qx{"$ENV{TEST_PERL}" -I"$ENV{TEST_LIB}" "$program" --dispatcher test-host --root "@{[ $worker_store->root ]}" --once 2>&1};
+  return ( $?, $output );
+}
+
+sub queued { $json->decode($store->root->child('queue/'.$_[0].'.json')->slurp_utf8) }
+
+subtest 'a completion the dispatcher refuses for good' => sub {
+  my $completion = claimed_completion('c' x 40, "late\n");
+  is $completion->{run}, 3, 'run 3 is claimed';
+  $store->write_json('queue/3.json', { queued(3)->%*, expires => time - 1 });
+  my ( $status, $output ) = worker_once();
+  is $status, 0, 'does not fail simpici-worker';
+  like $responses->slurp_utf8, qr/\}\{"rejected":"expired claim"\}\z/,
+    'simpici-dispatch answers with the reason and nothing else';
+  is $output, 'SimpiCI::Worker completion of run 3 rejected by the dispatcher: expired claim;'
+    ." kept as rejected/3.json\n", 'the worker says in one line what became of it';
+  ok !$pending->exists, 'the completion does not wait to be sent again';
+  is $json->decode($rejected->child('3.json')->slurp_utf8), $completion,
+    'it is kept as rejected/3.json, as it was';
+  ok !$store->root->child('public/runs/3.log')->exists, 'the dispatcher published nothing of it';
+};
+
+subtest 'the worker goes on after it' => sub {
+  is $store->allocate_run, 4, 'run 4 is next';
+  $store->write_json('queue/4.json', {
+    run => 4, key => 'hand-written-4', state => 'queued',
+    event => { source => 'git-poll', event => 'push', repository => 'legacy',
+      clone_url => $refused_url, ref => 'refs/heads/main', commit => 'e' x 40, payload => {} }
+  });
+  my ( $status, $output ) = worker_once();
+  is $status, 0, 'the next cycle does not fail';
+  like $output, qr/\ASimpiCI::Worker run 4 aborted: /, 'it claims run 4';
+  is [ queued(4)->{result}->@{qw( state exit_code )} ], [ 'failed', 125 ], 'and completes it';
+  is queued(3)->{state}, 'interrupted', 'the run it was refused for is interrupted';
+  is [ map { $_->basename } $rejected->children ], ['3.json'], 'and one file is kept for it';
+};
+
+subtest 'a dispatcher that cannot be asked' => sub {
+  # More than a pipe holds: an ssh that ends without reading leaves the
+  # worker writing to nobody.
+  my $completion = claimed_completion('d' x 40, 'x' x (2 * 1024 * 1024));
+  is $completion->{run}, 5, 'run 5 is claimed';
+  my $kept = sub {
+    my ( $name ) = @_;
+    ok $pending->is_file && $json->decode($pending->slurp_utf8)->{token} eq $completion->{token},
+      $name.': the completion stays to be sent again';
+    ok !$rejected->child('5.json')->exists, $name.': and is not put aside';
+  };
+  {
+    local $ENV{TEST_SSH_UNREACHABLE} = 1;
+    my ( $status, $output ) = worker_once();
+    # The shell that runs the program reports a SIGPIPE as exit code 141.
+    is $status >> 8, 0, 'an ssh that does not connect neither kills nor fails simpici-worker';
+    like $output, qr/\Asimpici-worker: SimpiCI::Worker dispatcher connection failed at /,
+      'the worker reports the connection';
+    $kept->('unreachable');
+  }
+  {
+    local $ENV{TEST_CONFIG} = $root->child('missing.json')->stringify;
+    my ( $status, $output ) = worker_once();
+    is $status, 0, 'a dispatcher that fails does not fail simpici-worker';
+    like $output, qr/^simpici-worker: SimpiCI::Worker dispatcher connection failed at /m,
+      'the worker reports it as a request that failed, not as a refusal';
+    $kept->('failing dispatcher');
+  }
+  my %answer = (
+    'no answer'                    => '',
+    'an answer that was cut short' => '{"rejec',
+    'an answer that is a list'     => '["rejected"]',
+    'a reason in other words'      => '{"rejected":"SimpiCI::Queue expired claim at /usr/lib line 113."}'
+  );
+  for my $name (sort keys %answer) {
+    local $ENV{TEST_SSH_ANSWER} = $answer{$name};
+    my ( $status, $output ) = worker_once();
+    is $status, 0, $name.' does not fail simpici-worker';
+    like $output, qr/\Asimpici-worker: SimpiCI::Worker invalid dispatcher response at /,
+      $name.' is reported as no answer of the dispatcher';
+    $kept->($name);
+  }
+  my ( $status, $output ) = worker_once();
+  is [ $status, $output ], [ 0, '' ], 'once the dispatcher answers, the completion is delivered';
+  ok !$pending->exists, 'and removed';
+  is queued(5)->{state}, 'success', 'the run has its result';
+  is length $store->root->child('public/runs/5.log')->slurp_utf8, 2 * 1024 * 1024,
+    'and its whole log';
+  is [ map { $_->basename } $rejected->children ], ['3.json'], 'nothing more was put aside';
+};
 
 done_testing;

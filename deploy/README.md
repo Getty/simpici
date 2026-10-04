@@ -453,7 +453,8 @@ is fixed.
 
 The worker persists `completion.json` before uploading it. If an SSH response
 is lost, the completion can therefore be retried idempotently without
-rebuilding. This is not an exactly-once guarantee for every possible crash
+rebuilding; [a completion that cannot be delivered](#a-completion-that-cannot-be-delivered)
+describes what ends the retry. This is not an exactly-once guarantee for every possible crash
 point: an interruption before the completion is persisted may already have
 left external side effects.
 
@@ -478,9 +479,84 @@ process lives to see, also when the completion could not be saved. Only a
 claim whose run is not a run number is refused without a report: there is
 nothing to report it under.
 
-A rejected, expired completion is retained for investigation. Stop the worker
-and archive the file only after checking external effects, before accepting
-new work.
+A run whose checkout or executor is ended by a signal, for example by the
+kernel's out-of-memory killer, is reported as `signalled`, with the signal
+and the exit code 128 plus its number: `137` for `SIGKILL`. The checkout
+stops at the command that was ended, and the executor is not started on a
+checkout that was cut off.
+
+#### A completion that cannot be delivered
+
+While a `completion.json` waits under the worker's `--root`, the worker
+sends it in every cycle and claims nothing. Two things can keep it from
+being accepted, and they end differently.
+
+**The dispatcher could not be asked, or failed.** There is no SSH
+connection, it timed out, `simpici-dispatch` ended with an error such as an
+unreadable configuration or a state directory it cannot lock or write, or
+its answer did not arrive whole. The journal of the worker gets one of these
+lines per cycle, below whatever `ssh` or `simpici-dispatch` wrote:
+
+```text
+simpici-worker: SimpiCI::Worker dispatcher connection failed at /usr/local/bin/simpici-worker line N.
+simpici-worker: SimpiCI::Worker invalid dispatcher response at /usr/local/bin/simpici-worker line N.
+```
+
+`completion.json` stays and is sent again every ten seconds, for as long as
+it takes. Nothing is lost as long as the lease of the run stands; repair the
+connection or the dispatcher. None of these failures says what the
+dispatcher did with the completion, so none of them ever ends the retry.
+
+**The dispatcher answered that it will never accept it.** The answer is
+`{"rejected":"<reason>"}` with one of three reasons:
+
+| Reason | What happened | The run at the dispatcher |
+| --- | --- | --- |
+| `expired claim` | The lease was over when the completion arrived: run, checkout and upload took longer than `timeout` plus 30 minutes, or the worker could not reach the dispatcher for that long | `interrupted` once the next claim has marked it, `running` until then. It is not run again |
+| `stale claim` | The run is claimed under another worker name or token, for example because the `--worker` name of the forced command was changed during the run | Keeps the lease of its claimant until that expires |
+| `unknown run` | The dispatcher has no such run: its state was replaced, or the worker was pointed at another dispatcher | None |
+
+The worker does not send such a completion again. It moves the file to
+`<root>/rejected/<run>.json`, says so once in its journal, and claims work
+in the next cycle:
+
+```text
+SimpiCI::Worker completion of run 7 rejected by the dispatcher: expired claim; kept as rejected/7.json
+```
+
+Search the journal for `rejected by the dispatcher`, or look into the
+directory; nothing else reports it. For each file:
+
+1. **Check the external effects of the run.** It ran to its end on the
+   worker, publish and deploy jobs included, although the dispatcher shows
+   it as `interrupted` or not at all. `result` in the file is the state and
+   exit code the worker would have reported, `log` the log it would have
+   delivered. The unredacted log is `<root>/public/runs/<run>.log` on the
+   worker.
+2. **Do not expect the dispatcher to run it again.** The commit is
+   deduplicated like any interrupted run.
+3. **Remove the file when you are done with it.** SimpiCI never reads,
+   rotates or removes anything below `rejected/`. A file holds one
+   completion, with a log of at most 4 MiB, and a second refusal of the same
+   run replaces it, so the directory grows by one file per refused run.
+
+The file is the request as it was sent, mode `0600` in a directory of mode
+`0700`: the result, the claim token and the log in which the assigned secret
+values are already redacted. The `secrets/<run>/` files of the run are
+removed before a completion is sent. It is private worker state like the
+rest of `--root` and is not to be published; the redaction covers the
+literal values of the claim, not other sensitive output.
+
+A refused completion can be delivered again only if the reason was a `stale
+claim` or `unknown run` whose cause is repaired while the lease of the run
+still stands: stop the worker, move `rejected/<run>.json` back to
+`completion.json`, start the worker. An `expired claim` stays refused.
+
+Install this version on the dispatcher and on the workers together. A
+dispatcher of an earlier version fails where this one answers, so a worker
+of this version keeps sending as before. A worker of an earlier version
+takes the answer for an acceptance and removes the completion without
+keeping it.
 
 #### Where secret values are kept, and for how long
 
@@ -546,6 +622,12 @@ removed, the worker logs `cannot remove secret files` with the path in every
 cycle and neither delivers a completion nor claims work until it is gone.
 Until the worker starts again, the files of the killed run stay where they
 are; a VM that is taken out of service has to be cleaned by hand.
+
+A completion the dispatcher refused and the worker put aside under
+`rejected/` is no further place for a value in the clear: its log was
+redacted with the values of the claim before the completion was saved. It
+is kept until an operator removes it, see
+[a completion that cannot be delivered](#a-completion-that-cannot-be-delivered).
 
 Neither removal is a secure erase. The files are unlinked; what the file
 system, a snapshot or a backup keeps of them is outside SimpiCI.

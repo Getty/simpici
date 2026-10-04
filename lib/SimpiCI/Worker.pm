@@ -27,12 +27,21 @@ sub _request {
     'ssh', '-T', '-oBatchMode=yes', '-oStrictHostKeyChecking=yes',
     '-oConnectTimeout=15', '-oServerAliveInterval=15', '-oServerAliveCountMax=2',
     $self->host, 'simpici-dispatch');
-  print {$input} $json->encode($request) or croak __PACKAGE__.' cannot send request';
-  close $input;
+  # An ssh that ended before it read the request must not end the worker
+  # with it: the write fails instead, and the request is sent again later.
+  local $SIG{PIPE} = 'IGNORE';
+  my $sent = print {$input} $json->encode($request);
+  $sent = close($input) && $sent;
   my $response = do { local $/; <$output> };
+  close $output;
+  # Waited for in every case, so that no ssh is left behind unreaped.
   waitpid($pid, 0);
-  croak __PACKAGE__.' dispatcher connection failed' if $?;
-  return $json->decode($response);
+  croak __PACKAGE__.' dispatcher connection failed' if $? || !$sent;
+  # Only a complete answer is one: whatever else arrived says nothing about
+  # what the dispatcher did with the request.
+  my $answer = eval { $json->decode($response // '') };
+  croak __PACKAGE__.' invalid dispatcher response' unless ref $answer eq 'HASH';
+  return $answer;
 }
 
 sub once {
@@ -40,13 +49,8 @@ sub once {
   $self->store->prepare;
   # Before the dispatcher is asked for anything: it may be out of reach.
   $self->remove_orphaned_secrets;
-  my $pending = $self->store->root->child('completion.json');
-  if ($pending->is_file) {
-    my $request = JSON::MaybeXS->new->decode($pending->slurp_utf8);
-    my $response = $self->_request($request);
-    $pending->remove;
-    return $response;
-  }
+  my $pending = $self->_pending;
+  return $self->_deliver(JSON::MaybeXS->new->decode($pending->slurp_utf8)) if $pending->is_file;
   my $claim = $self->_request({ operation => 'claim' });
   return unless $claim->{run};
   # The run number names the secret directory and the completion: a claim
@@ -61,9 +65,50 @@ sub once {
   $self->_remove_secrets($secrets_root);
   croak __PACKAGE__.' cannot save the completion of run '.$claim->{run}.': '.$error
     unless $request;
+  return $self->_deliver($request);
+}
+
+sub _pending { $_[0]->store->root->child('completion.json') }
+
+# Sends the saved completion. It leaves completion.json only when the
+# dispatcher answered: accepted, it is removed; refused for good, it is put
+# aside. A request that failed, for whatever reason, keeps it for the next
+# cycle, and so does an answer that is neither.
+sub _deliver {
+  my ( $self, $request ) = @_;
   my $response = $self->_request($request);
-  $pending->remove;
+  if (exists $response->{rejected}) {
+    my $reason = $response->{rejected};
+    croak __PACKAGE__.' invalid dispatcher response' unless $self->_refusal_valid($reason);
+    $self->_set_aside($request, $reason);
+    return $response;
+  }
+  $self->_pending->remove;
   return $response;
+}
+
+# A reason is a few lowercase words, as SimpiCI::Queue->refusal_reasons has
+# them. It is written to standard error, so nothing else passes as one.
+sub _refusal_valid {
+  my ( $self, $reason ) = @_;
+  return defined $reason && !ref $reason && length $reason <= 64
+    && $reason =~ /\A[a-z]+(?: [a-z]+)*\z/;
+}
+
+# Renamed, not copied: the completion is either still to be sent or kept
+# under rejected/, whenever the worker is interrupted.
+sub _set_aside {
+  my ( $self, $request, $reason ) = @_;
+  my $run = $request->{run};
+  croak __PACKAGE__.' invalid run in completion'
+    unless defined $run && !ref $run && $run =~ /\A[1-9][0-9]*\z/;
+  my $kept = $self->store->root->child('rejected', $run.'.json');
+  $kept->parent->mkpath;
+  rename($self->_pending->stringify, $kept->stringify)
+    or croak __PACKAGE__.' cannot keep the rejected completion of run '.$run.': '.$!;
+  warn __PACKAGE__.' completion of run '.$run.' rejected by the dispatcher: '.$reason
+    .'; kept as rejected/'.$run.".json\n";
+  return $kept;
 }
 
 # One claim is executed at a time, and once removes its secret files before
@@ -183,8 +228,10 @@ SimpiCI::Worker - outbound SSH runner
 =head1 DESCRIPTION
 
 C<once> first retries a persisted completion, otherwise claims and executes one
-exact revision. The SSH private key is never mounted in job containers. The
-worker's entire state tree is private and must not be served by a web server.
+exact revision. A completion the dispatcher refuses for good is put aside
+instead of being retried. The SSH private key is never mounted in job
+containers. The worker's entire state tree is private and must not be served
+by a web server.
 
 A claim that cannot be executed is completed as a failed run instead of being
 left to its lease: an event L<SimpiCI::Event> refuses, a claim of another
@@ -204,6 +251,55 @@ reason does not say where in the installation the error was raised. A path the
 message itself names stays in it, such as the file L<SimpiCI::Store> could not
 publish, and so does the C<source> of a refused event; the other fields of an
 event are refused without being quoted.
+
+=head2 Delivering a completion
+
+The completion of a run is saved as C<completion.json> below the store root
+before it is sent, and C<once> sends a saved one before it claims anything.
+What becomes of the file depends on what the dispatcher answered:
+
+=over 4
+
+=item *
+
+The report of the run: the completion was accepted, now or by an earlier
+attempt whose answer was lost. The file is removed.
+
+=item *
+
+C<{ "rejected": REASON }>: the dispatcher will never accept it, see
+L<SimpiCI::Queue/refusal>. The file is renamed to
+C<rejected/E<lt>runE<gt>.json>, replacing what was kept there for the same
+run, and C<once> warns
+
+  SimpiCI::Worker completion of run N rejected by the dispatcher: REASON; kept as rejected/N.json
+
+and returns the answer. The next C<once> claims work again. REASON is one of
+the phrases of L<SimpiCI::Queue/refusal_reasons>; the worker accepts a few
+lowercase words and nothing else in its place.
+
+=item *
+
+Anything else: no connection, an C<ssh> or a dispatcher that ended with
+another exit code than 0, an answer that is not one JSON object or whose
+C<rejected> is not such a reason. C<once> croaks with
+C<dispatcher connection failed> or C<invalid dispatcher response>, the file
+stays, and the next C<once> sends it again. None of these says what the
+dispatcher did with the completion, so none of them ends the retry.
+
+=back
+
+What is kept under C<rejected/> is the request as it was sent: the result,
+the claim token, and the log with the secret values of the claim already
+redacted. The secret files of the run are removed before a completion is
+sent. Nothing reads the directory and nothing removes from it; it is the
+operator's to look at and to empty. A completion can be put back as
+C<completion.json> while no worker runs on the store, and is then sent
+again.
+
+A request to the dispatcher that cannot be written, because C<ssh> ended
+before it read it, fails like any other connection; it does not end the
+process with C<SIGPIPE>.
 
 =head2 Secrets of a claim
 
@@ -246,8 +342,11 @@ until that expires.
   my $response = $worker->once;
 
 Returns the dispatcher's answer to the completion it delivered, or nothing if
-there was no work. Before it asks the dispatcher for anything, it calls
-L</remove_orphaned_secrets>.
+there was no work. The answer is the report of the run, or
+C<{ rejected =E<gt> REASON }> for a completion that was put aside, see
+L</Delivering a completion>. Croaks if the dispatcher gave no answer; the
+completion is then still saved. Before it asks the dispatcher for anything,
+it calls L</remove_orphaned_secrets>.
 
 Only one C<once> may run on a store at a time. C<simpici-worker> holds a lock
 on the store for that.
