@@ -49,19 +49,26 @@
     repositories setting must be a list of objects, each with a nonempty name
     and clone_url; an entry of another shape, such as a bare URL, is refused
     by its position, and a configuration without repositories does not start,
-    in local mode either. A clone URL is refused when it is http:// or
-    https:// with any user part, when it carries a password in the user part
-    in any other form (ssh://user:password@..., ftp(s)://, a URL behind a
-    remote helper, an empty password, a percent-encoded colon,
-    user:password@host:path), or when it contains whitespace or control
-    characters. A user name alone stays valid (ssh://git@host/path,
+    in local mode either. A clone URL is one of https://, http://, ssh://,
+    file://, [user@]host:path or an absolute path; anything else is refused:
+    remote helpers (name::, unknown or upper-case schemes), git://,
+    git+ssh://, ftp(s)://, relative paths, a leading "-", whitespace and
+    control characters. http:// and https:// take no user part, and a
+    password in the user part of any other form (ssh://user:password@...,
+    an empty password, a percent-encoded colon, user:password@host:path) is
+    refused. A user name alone stays valid (ssh://git@host/path,
     git@host:path). The message names the repository and its position in the
     configuration and never repeats the value; credentials belong in a Git
     credential helper of the account that runs git. The rule is
     SimpiCI::Event->clone_url_rejection; clone_url_without_credentials gives
-    the URL as shown in the "not polled" line. The runner passes the clone
-    URL to git remote add after "--", so a URL that begins with "-" is not
-    read as an option.
+    the URL as shown in the "not polled" line, without its user part.
+    SimpiCI::Event and simpicid also refuse control characters in repository
+    and event.
+  - SimpiCI::Runner->run croaks for anything but a SimpiCI::Event and ends
+    the options of git fetch with "--". simpici-executor leaves credentials
+    out of CICD_CLONE_URL before it reaches the jobs, and ends with exit 65
+    before any container starts if a value of the event file contains a line
+    end or another control character.
   - Dispatch durable leased jobs to outbound SSH workers, with fenced recovery
     and idempotent completion upload through a restricted worker protocol.
   - Scope dispatcher secret files to repositories, refs, events and publish or

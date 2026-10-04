@@ -97,6 +97,37 @@ export CICD_SOURCE="${CICD_SOURCE:-$source_name}"
 export CICD_EVENT="${CICD_EVENT:-${GITHUB_EVENT_NAME:-${FORGEJO_EVENT_NAME:-push}}}"
 export CICD_REPOSITORY="${CICD_REPOSITORY:-${GITHUB_REPOSITORY:-${FORGEJO_REPOSITORY:-unknown}}}"
 export CICD_CLONE_URL="${CICD_CLONE_URL:-${GITHUB_SERVER_URL:-${FORGEJO_SERVER_URL:-}}/${CICD_REPOSITORY}.git}"
+# The clone URL is used for nothing here: it goes into the event file and the
+# environment of every job, and that is all. A native event has none that
+# SimpiCI::Event refuses. What a hosted or direct caller sets is not held
+# against that rule, with one exception: a user part that SimpiCI::Event
+# does not accept may be credentials, and those are not handed to every job.
+# It is what stands between "://" and the last "@" ahead of the first "/".
+# Only a user name of an ssh:// or file:// URL stays, one without a colon;
+# behind every other scheme a lone user part may be a token. Without a
+# scheme it is the user:password ahead of @host:path.
+clone_url_without_credentials() {
+  local url="$1" name='[A-Za-z][A-Za-z0-9+.-]*'
+  local scheme="^(${name}::)?${name}://"
+  local with_scheme="^((${name}::)?${name}://)([^/]*)@(.*)\$"
+  local without_scheme='^([^/:@]*:[^/@]*)@([^/:@]*:.*)$'
+  clone_url_shown="$url"
+  if [[ "$url" =~ $scheme ]]; then
+    [[ "$url" =~ $with_scheme ]] || return 0
+    local before="${BASH_REMATCH[1]}" user="${BASH_REMATCH[3]}" after="${BASH_REMATCH[4]}"
+    if [[ ( "$before" != ssh:// && "$before" != file:// ) || "$user" == *:* || "${user,,}" == *%3a* ]]; then
+      clone_url_shown="$before$after"
+    fi
+  elif [[ "$url" =~ $without_scheme ]]; then
+    clone_url_shown="${BASH_REMATCH[2]}"
+  fi
+}
+clone_url_without_credentials "$CICD_CLONE_URL"
+if [[ "$clone_url_shown" != "$CICD_CLONE_URL" ]]; then
+  printf 'SimpiCI: CICD_CLONE_URL carried credentials; its user part is not passed on to the jobs\n' >&2
+  CICD_CLONE_URL="$clone_url_shown"
+fi
+unset clone_url_shown
 export CICD_REF="${CICD_REF:-${GITHUB_REF:-${FORGEJO_REF:-}}}"
 export CICD_COMMIT="${CICD_COMMIT:-${GITHUB_SHA:-${FORGEJO_SHA:-}}}"
 export CICD_BRANCH='' CICD_TAG=''
@@ -123,23 +154,35 @@ if [[ -n "${SIMPICI_INSTANCE:-}" ]]; then
   )
 fi
 
+# Sets json_encoded to the value as a JSON string. A line end or another
+# control character would have to be escaped to stand in one and has no
+# place in any of these values; it is refused with 65. The result is a
+# variable and not what the function prints: the status of a command
+# substitution that is the argument of another command is lost, and the
+# shell would go on with an empty string.
 json_string() {
-  local value="$1"
-  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || return 65
+  local value="$1" LC_ALL=C
+  [[ "$value" != *[[:cntrl:]]* ]] || return 65
   value="${value//\\/\\\\}"; value="${value//\"/\\\"}"
-  printf '"%s"' "$value"
+  json_encoded="\"$value\""
 }
+# The event file is written whole or not at all, before anything is started:
+# providers and jobs read it. Each field is named with the variable it comes
+# from, which a hosted or direct caller sets as it likes.
+event_json=''
+for event_field in source:CICD_SOURCE event:CICD_EVENT repository:CICD_REPOSITORY \
+    clone_url:CICD_CLONE_URL ref:CICD_REF commit:CICD_COMMIT; do
+  event_variable="${event_field#*:}"
+  json_string "${!event_variable}" || {
+    printf 'SimpiCI: event field %s must not contain a line end or another control character\n' \
+      "${event_field%%:*}" >&2
+    exit 65
+  }
+  event_json+="${event_json:+,}"$'\n'"  \"${event_field%%:*}\": $json_encoded"
+done
 umask 077
-{
-  printf '{\n'
-  printf '  "source": %s,\n' "$(json_string "$CICD_SOURCE")"
-  printf '  "event": %s,\n' "$(json_string "$CICD_EVENT")"
-  printf '  "repository": %s,\n' "$(json_string "$CICD_REPOSITORY")"
-  printf '  "clone_url": %s,\n' "$(json_string "$CICD_CLONE_URL")"
-  printf '  "ref": %s,\n' "$(json_string "$CICD_REF")"
-  printf '  "commit": %s\n' "$(json_string "$CICD_COMMIT")"
-  printf '}\n'
-} >"$event_host"
+printf '{%s\n}\n' "$event_json" >"$event_host"
+unset event_json event_field event_variable json_encoded
 
 # Build the effective .cicd in a writable staging directory: the repository's
 # own top-level jobs first, then whatever providers contribute. The checkout

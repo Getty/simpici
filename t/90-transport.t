@@ -74,7 +74,7 @@ my $program = path('bin/simpici-worker')->absolute;
 my $output = qx{"$ENV{TEST_PERL}" -I"$ENV{TEST_LIB}" "$program" --dispatcher test-host --root "@{[ $worker_store->root ]}" --once 2>&1};
 is $? >> 8, 0, 'simpici-worker survives a claim it refuses';
 like $output,
-  qr/\ASimpiCI::Worker run 2 aborted: invalid event in claim: SimpiCI::Event clone URL must not contain a password[^\n]* runs git at [^\n]+\n\z/,
+  qr/\ASimpiCI::Worker run 2 aborted: invalid event in claim: SimpiCI::Event clone URL must be a URL of the scheme [^\n]* or an absolute path at [^\n]+\n\z/,
   'and names the run, the reason and what the event was refused for in one line on standard error';
 unlike $output, qr/transport-secret-value|hunter2-in-url/, 'without the secret or the URL';
 # What the error said, and where it was raised, is no part of the reason:

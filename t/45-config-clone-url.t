@@ -186,26 +186,29 @@ sub event_error {
 
 for my $clone_url (
   'https://forge.invalid/owner/project.git',
+  'https://forge.invalid:8443/owner/project.git',
   'https://forge.invalid/owner/pro@ject.git',
+  'http://forge.invalid/owner/project.git',
   'git@forge.invalid:owner/project.git',
   'ssh://git@forge.invalid/owner/project.git',
+  'ssh://forge.invalid/owner/project.git',
   'ssh://git@forge.invalid:2222/owner/project.git',
   'ssh://forge.invalid:2222/owner/pro:je@ct.git',
   'ssh://git@forge.invalid/owner/pro:je@ct.git',
   'ssh://git@[2001:db8::1]:2222/owner/project.git',
   'ssh://[2001:db8::1]:2222/owner/project.git',
   'ssh://@forge.invalid/owner/project.git',
-  'git+ssh://git@forge.invalid/owner/project.git',
-  'git://forge.invalid/owner/project.git',
-  'ftp://anonymous@forge.invalid/owner/project.git',
+  'forge.invalid:owner/project.git',
   'forge.invalid:owner/pro@ject.git',
   'forge:pro@ject.git',
   'git@forge.invalid:owner/pro:ject.git',
+  'git@forge.invalid:/srv/git/project.git',
   'git@[2001:db8::1]:owner/project.git',
   '[2001:db8::1]:owner/project.git',
+  'file:///srv/git/project.git',
   'file:///srv/git/us:er@project.git',
   '/srv/git/us:er@pro:ject.git',
-  './us:er@pro:ject.git',
+  '/srv/git/ext::project.git',
   '/srv/git/project.git'
 ) {
   is [ scalar SimpiCI::Event->clone_url_rejection($clone_url), configuration_error($clone_url), event_error($clone_url) ],
@@ -213,53 +216,160 @@ for my $clone_url (
   is(SimpiCI::Event->clone_url_without_credentials($clone_url), $clone_url, 'and shown as it is');
 }
 
+# Each case: the URL, what the reason says, a name for it, and whether what
+# is shown of the URL is the URL, because it has no user part to leave out.
+my $credentials = 'must not contain credentials';
+my $password = 'must not contain a password';
+my $unprintable = 'must not contain whitespace or control characters';
+my $dash = 'must not begin with "-"';
+my $form = 'must be a URL of the scheme https, http, ssh or file,';
+my %reasons;
 for my $case (
-  [ $private, qr/credentials/, 'user and token' ],
-  [ 'https://'.$token.'@forge.invalid/owner/project.git', qr/credentials/, 'a lone token' ],
-  [ 'http://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/credentials/, 'plain HTTP' ],
-  [ 'HTTPS://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/credentials/, 'an upper-case scheme' ],
-  [ 'https://@forge.invalid/owner/project.git', qr/credentials/, 'an empty user part over HTTPS' ],
-  [ 'helper::https://'.$token.'@forge.invalid/owner/project.git', qr/credentials/, 'HTTPS behind a remote helper' ],
-  [ $keyed, qr/a password/, 'a password over ssh' ],
-  [ 'ssh://'.$user.':'.$token.'@forge.invalid:2222/owner/project.git', qr/a password/, 'a password ahead of a port' ],
-  [ 'ssh://'.$user.':'.$token.'@[2001:db8::1]:2222/owner/project.git', qr/a password/, 'a password ahead of an IPv6 host' ],
-  [ 'ssh://'.$user.':@forge.invalid/owner/project.git', qr/a password/, 'an empty password' ],
-  [ 'ssh://:'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'a password without a user' ],
-  [ 'ssh://'.$user.':to@ken@forge.invalid/owner/project.git', qr/a password/, 'a password with an @' ],
-  [ 'ssh://'.$user.'%3A'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'a percent-encoded colon' ],
-  [ 'ssh://'.$user.'%3a'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'a lower-case percent-encoded colon' ],
-  [ 'SSH://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'an upper-case ssh scheme' ],
-  [ 'git+ssh://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'a scheme with a plus' ],
-  [ 'git://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'the git scheme' ],
-  [ 'ftp://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'FTP' ],
-  [ 'ftps://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'FTPS' ],
-  [ 'helper::ssh://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'ssh behind a remote helper' ],
-  [ $user.':'.$token.'@forge.invalid:owner/project.git', qr/a password/, 'user:password@host:path without a scheme' ],
-  [ $user.':@forge.invalid:/srv/git/project.git', qr/a password/, 'that form with an empty password' ],
-  [ 'https://forge.invalid/owner/pro ject.git', qr/whitespace or control characters/, 'a space' ],
-  [ "https://forge.invalid/owner/project.git\n", qr/whitespace or control characters/, 'a newline' ],
-  [ "https://forge.invalid/owner/\tproject.git", qr/whitespace or control characters/, 'a tab' ],
-  [ "https://forge.invalid/owner/project.git\x7f", qr/whitespace or control characters/, 'a DEL' ],
-  [ "https://forge.invalid/owner/project.git\0", qr/whitespace or control characters/, 'a NUL' ]
+  [ $private, $credentials, 'user and token' ],
+  [ 'https://'.$token.'@forge.invalid/owner/project.git', $credentials, 'a lone token' ],
+  [ 'http://'.$user.':'.$token.'@forge.invalid/owner/project.git', $credentials, 'plain HTTP' ],
+  [ 'http://'.$token.'@forge.invalid/owner/project.git', $credentials, 'a lone token over plain HTTP' ],
+  [ 'https://@forge.invalid/owner/project.git', $credentials, 'an empty user part over HTTPS' ],
+  [ $keyed, $password, 'a password over ssh' ],
+  [ 'ssh://'.$user.':'.$token.'@forge.invalid:2222/owner/project.git', $password, 'a password ahead of a port' ],
+  [ 'ssh://'.$user.':'.$token.'@[2001:db8::1]:2222/owner/project.git', $password, 'a password ahead of an IPv6 host' ],
+  [ 'ssh://'.$user.':@forge.invalid/owner/project.git', $password, 'an empty password' ],
+  [ 'ssh://:'.$token.'@forge.invalid/owner/project.git', $password, 'a password without a user' ],
+  [ 'ssh://'.$user.':to@ken@forge.invalid/owner/project.git', $password, 'a password with an @' ],
+  [ 'ssh://'.$user.'%3A'.$token.'@forge.invalid/owner/project.git', $password, 'a percent-encoded colon' ],
+  [ 'ssh://'.$user.'%3a'.$token.'@forge.invalid/owner/project.git', $password, 'a lower-case percent-encoded colon' ],
+  [ 'file://'.$user.':'.$token.'@forge.invalid/srv/git/project.git', $password, 'a password in a file URL' ],
+  [ $user.':'.$token.'@forge.invalid:owner/project.git', $password, 'user:password@host:path without a scheme' ],
+  [ $user.':@forge.invalid:/srv/git/project.git', $password, 'that form with an empty password' ],
+  [ 'https://forge.invalid/owner/pro ject.git', $unprintable, 'a space', 'as it is' ],
+  [ "https://forge.invalid/owner/project.git\n", $unprintable, 'a newline', 'as it is' ],
+  [ "https://forge.invalid/owner/\tproject.git", $unprintable, 'a tab', 'as it is' ],
+  [ "https://forge.invalid/owner/project.git\x7f", $unprintable, 'a DEL', 'as it is' ],
+  [ "https://forge.invalid/owner/project.git\0", $unprintable, 'a NUL', 'as it is' ],
+  # What git would take for an option, at any of its commands.
+  [ '--upload-pack=/srv/git/program', $dash, 'an option of git', 'as it is' ],
+  [ '--tags', $dash, 'an option without a value', 'as it is' ],
+  [ '-oProxyCommand=program:owner/project.git', $dash, 'an option of ssh in the place of a host', 'as it is' ],
+  [ '-/srv/git/project.git', $dash, 'a path that begins with a dash', 'as it is' ],
+  # A scheme git knows, but that is none of the four.
+  [ 'git://forge.invalid/owner/project.git', $form, 'the git scheme', 'as it is' ],
+  [ 'git://'.$user.':'.$token.'@forge.invalid/owner/project.git', $form, 'the git scheme with a password' ],
+  [ 'git+ssh://git@forge.invalid/owner/project.git', $form, 'a scheme with a plus' ],
+  [ 'ssh+git://'.$user.':'.$token.'@forge.invalid/owner/project.git', $form, 'the other one, with a password' ],
+  [ 'ftp://anonymous@forge.invalid/owner/project.git', $form, 'FTP' ],
+  [ 'ftp://'.$user.':'.$token.'@forge.invalid/owner/project.git', $form, 'FTP with a password' ],
+  [ 'ftps://'.$user.':'.$token.'@forge.invalid/owner/project.git', $form, 'FTPS with a password' ],
+  [ 'rsync://forge.invalid/owner/project.git', $form, 'rsync', 'as it is' ],
+  # A scheme git does not know is the name of a program: git-remote-<scheme>.
+  [ 'persistent-https://'.$token.'@forge.invalid/owner/project.git', $form, 'a lone token behind an HTTPS helper' ],
+  [ 'persistent-https://forge.invalid/owner/project.git', $form, 'an HTTPS helper', 'as it is' ],
+  [ 'HTTPS://forge.invalid/owner/project.git', $form, 'an upper-case scheme', 'as it is' ],
+  [ 'HTTPS://'.$user.':'.$token.'@forge.invalid/owner/project.git', $form, 'an upper-case scheme with a token' ],
+  [ 'Https://forge.invalid/owner/project.git', $form, 'a mixed-case scheme', 'as it is' ],
+  [ 'SSH://'.$user.':'.$token.'@forge.invalid/owner/project.git', $form, 'an upper-case ssh scheme with a password' ],
+  [ 'svn://forge.invalid/owner/project', $form, 'a scheme of another tool', 'as it is' ],
+  # So is what stands ahead of "::".
+  [ 'ext::program', $form, 'the helper that runs a command', 'as it is' ],
+  [ 'ext::/srv/git/program', $form, 'that helper with a path', 'as it is' ],
+  [ 'fd::17', $form, 'the helper that reads a descriptor', 'as it is' ],
+  [ 'helper::https://forge.invalid/owner/project.git', $form, 'HTTPS behind a remote helper', 'as it is' ],
+  [ 'helper::https://'.$token.'@forge.invalid/owner/project.git', $form, 'HTTPS with a token behind a remote helper' ],
+  [ 'helper::ssh://'.$user.':'.$token.'@forge.invalid/owner/project.git', $form, 'ssh with a password behind a remote helper' ],
+  [ 'helper::/srv/git/project.git', $form, 'a path behind a remote helper', 'as it is' ],
+  [ 'https::forge.invalid/owner/project.git', $form, 'an accepted scheme as a remote helper', 'as it is' ],
+  # A path that is not absolute is read from wherever git happens to run.
+  [ 'srv/git/project.git', $form, 'a relative path', 'as it is' ],
+  [ './srv/git/project.git', $form, 'a path below the working directory', 'as it is' ],
+  [ '../srv/git/project.git', $form, 'a path above it', 'as it is' ],
+  [ './us:er@pro:ject.git', $form, 'such a path with a colon', 'as it is' ],
+  [ 'project.git', $form, 'a bare name', 'as it is' ],
+  [ 'https//forge.invalid/owner/project.git', $form, 'a scheme without its colon', 'as it is' ],
+  [ ':owner/project.git', $form, 'a path behind no host', 'as it is' ]
 ) {
-  my ( $clone_url, $kind, $label ) = @$case;
+  my ( $clone_url, $kind, $label, $as_it_is ) = @$case;
   my $reason = SimpiCI::Event->clone_url_rejection($clone_url);
-  like $reason, qr/\Aclone URL must not contain $kind/, 'the rule rejects '.$label;
+  like $reason, qr/\Aclone URL \Q$kind\E/, 'the rule rejects '.$label;
+  $reasons{ $reason // '' } = 1;
   my $refused = configuration_error($clone_url);
   like $refused, qr/\ASimpiCI::App::Eventd repository owner\/project \(repositories\[0\]\): \Q$reason\E at /,
     'the configuration is refused for that reason';
   my $unbuilt = event_error($clone_url);
   like $unbuilt, qr/\ASimpiCI::Event \Q$reason\E at /, 'and so is the event';
-  is scalar( grep { index($_, $clone_url) >= 0 || /forge\.invalid/ } $reason, $refused, $unbuilt ), 0,
+  is scalar( grep { index($_ // '', $clone_url) >= 0 || /forge\.invalid|srv\/git/ } $reason, $refused, $unbuilt ), 0,
     'none of them repeats the URL';
   my $shown = SimpiCI::Event->clone_url_without_credentials($clone_url);
-  is scalar( grep { index($shown, $_) >= 0 } $user, $token, 'ken@', '@' ), 0,
-    'and it is shown without its user part' unless $label =~ /\Aa (?:space|newline|tab|DEL|NUL)\z/;
+  if ($as_it_is) {
+    is $shown, $clone_url, 'and it has no user part to leave out';
+  } else {
+    is scalar( grep { index($shown, $_) >= 0 } $user, $token, 'ken@', '@' ), 0,
+      'and it is shown without its user part';
+  }
 }
 is(SimpiCI::Event->clone_url_without_credentials($keyed), 'ssh://forge.invalid/owner/keyed.git',
   'what is shown is the rest of the URL');
 is(SimpiCI::Event->clone_url_without_credentials($user.':'.$token.'@forge.invalid:owner/project.git'),
   'forge.invalid:owner/project.git', 'also without a scheme');
+is(SimpiCI::Event->clone_url_without_credentials('persistent-https://'.$token.'@forge.invalid/owner/project.git'),
+  'persistent-https://forge.invalid/owner/project.git', 'and of a URL that is refused for its scheme');
+
+# The schemes are named in one place, and the reason is made from it.
+is [ SimpiCI::Event->can('clone_url_schemes') ? SimpiCI::Event->clone_url_schemes : () ],
+  [qw( https http ssh file )], 'the accepted schemes';
+is scalar( keys %reasons ), 5, 'the rule has five reasons';
+
+#### The reasons in the documentation
+
+# As a reader finds them: where the rule is described, each reason in full,
+# as a line of its own in the manual and so not merely because the code of
+# the module has it, and behind the repository in the operations guide.
+{
+  my %document = (
+    'the manual of SimpiCI::Event' => [ path($INC{'SimpiCI/Event.pm'}), "\n  %s\n" ],
+    'the operations guide'         => [ path('deploy/README.md'), "(repositories[0]): %s\n" ]
+  );
+  for my $name (sort keys %document) {
+    my ( $file, $markup ) = $document{$name}->@*;
+    next unless $file->is_file;
+    my $text = $file->slurp_utf8;
+    ok index($text, sprintf $markup, $_) >= 0, $name.' gives the reason: '.$_
+      for grep { length } sort keys %reasons;
+  }
+}
+
+#### A clone URL that git would not read as the address of a repository
+
+# Readable through nothing: the daemon has to refuse these before it polls.
+# A daemon that polls them gives the first to git as it stands, and git
+# starts the program the second and the third name.
+{
+  my $started = $root->child('helper-started');
+  my $programs = $root->child('programs');
+  $programs->mkpath;
+  my $helper = $programs->child('git-remote-simpicitest');
+  $helper->spew_utf8("#!/bin/sh\necho started >> '".$started."'\nexit 1\n");
+  $helper->chmod(0755);
+  local $ENV{PATH} = $programs.':'.$ENV{PATH};
+  # With the default of git for what a helper is allowed.
+  delete local $ENV{GIT_ALLOW_PROTOCOL};
+  for my $case (
+    [ 'dash', '--upload-pack='.$helper, $dash ],
+    [ 'helper', 'simpicitest::'.$good, $form ],
+    [ 'scheme', 'simpicitest://forge.invalid/owner/project.git', $form ]
+  ) {
+    my ( $name, $clone_url, $kind ) = @$case;
+    my @odd = ( repository('owner/good', $good), repository('owner/odd', $clone_url) );
+    for my $mode (qw( local dispatcher )) {
+      my $state = $name.'-'.$mode;
+      ( $died, $status, $warnings ) = once(daemon_config($state, \@odd, mode => $mode));
+      like $died, qr/\ASimpiCI::App::Eventd repository owner\/odd \(repositories\[1\]\): clone URL \Q$kind\E/,
+        'simpicid does not start with '.$clone_url.', mode '.$mode;
+      is $warnings, [], 'instead of reporting it as not polled in every cycle';
+      is runs_of($state), [], 'the readable repository ahead of it is not built';
+      ok !$root->child($state, 'queue')->exists, 'and nothing is queued';
+    }
+  }
+  ok !$started->exists, 'git started no program a clone URL names';
+}
 
 #### The example configurations
 

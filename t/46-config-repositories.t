@@ -168,6 +168,45 @@ for my $case (
   hides_the_value($died // '', 'the message is');
 }
 
+#### A name that is not one line of text
+
+# SimpiCI::Event refuses a control character in the name of a repository.
+# The daemon says so at its start, not when the repository first has
+# something to build, and names the entry by its position only: the name
+# would move the terminal it is printed on.
+my $unprintable = 'name must not contain control characters';
+for my $case (
+  [ "owner/pro\tject", 'a tab' ], [ "owner/project\n", 'a line end' ],
+  [ "owner/\rproject", 'a carriage return' ], [ "owner/pro\0ject", 'a NUL' ],
+  [ "owner/pro\e[2Jject", 'an escape sequence' ], [ "owner/project\x7f", 'a DEL' ]
+) {
+  my ( $name, $label ) = @$case;
+  my $died = refused({ repositories => [ repository(), repository(name => $name) ] });
+  like $died, qr/\ASimpiCI::App::Eventd repository \? \(repositories\[1\]\): \Q$unprintable\E at /,
+    'refuse '.$label.' in a name';
+  unlike $died // '', qr/[\x00-\x09\x0b-\x1f\x7f]|ject/, 'without the name';
+  my $unusable = refused({ repositories => [ { name => $name } ] });
+  like $unusable, qr/\ASimpiCI::App::Eventd repository \? \(repositories\[0\]\): \Q$needs\E at /,
+    'and such a name is not repeated for another mistake of its entry either';
+}
+is refused({ repositories => [ repository(name => "gr\x{fc}n/two words") ] }), undef,
+  'a name with a space and a character beyond ASCII is accepted';
+
+# With a repository that can be read and has a tip to build, so that a
+# check that only comes with the event shows as a run.
+{
+  my @named = ( repository(name => 'owner/good', clone_url => "$good"),
+    repository(name => "owner/go\tod", clone_url => "$good") );
+  for my $mode (qw( local dispatcher )) {
+    my ( $died, $status, $warnings ) = once(daemon_config('named-'.$mode, \@named, mode => $mode));
+    like $died, qr/\ASimpiCI::App::Eventd repository \? \(repositories\[1\]\): \Q$unprintable\E at /,
+      'simpicid does not start with a tab in the name of a repository, mode '.$mode;
+    is [ $warnings, runs_of('named-'.$mode) ], [ [], [] ],
+      'the repository ahead of it is neither polled nor built';
+    ok !$root->child('named-'.$mode, 'queue')->exists, 'and nothing is queued';
+  }
+}
+
 is refused({ repositories => [] }), undef, 'an empty list of repositories is accepted';
 is refused({ repositories => [ { name => 'owner/project', clone_url => '/srv/git/project.git' } ] }),
   undef, 'nothing but the name and the clone URL of an entry is looked at';

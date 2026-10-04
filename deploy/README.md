@@ -36,7 +36,10 @@ perl -Ilib bin/simpici --event event.json --root var \
 
 Replace `TARGET_REPO`. With a detached HEAD, the desired canonical ref must be
 specified explicitly. The example source `manual` is a valid native source
-value; `github-actions` would not be.
+value; `github-actions` would not be. The `clone_url` of an event file is
+one of the [accepted clone URLs](#accepted-clone-urls), for a local
+repository its absolute path; `simpici` refuses any other before it starts
+a run.
 
 The runner fetches the exact commit and checks it out with a detached HEAD.
 Local, uncommitted files in the target repository are not included in the build.
@@ -78,43 +81,38 @@ that is valid today. Important details:
   appear later are built; deletion alone does not start a run, and neither
   does a deleted ref that returns on the commit recorded for it.
 - `repositories` is a list of objects, each with a `name` and a `clone_url`
-  that are nonempty strings. `simpicid` checks this when it starts, in local
-  and in dispatcher mode, and exits before it polls anything:
+  that are nonempty strings. A `name` is one line of text: a space and
+  characters beyond ASCII are fine, a tab, a line end or another control
+  character is not. `simpicid` checks this when it starts, in local and in
+  dispatcher mode, and exits before it polls anything:
 
   ```text
   SimpiCI::App::Eventd repositories must be a list
   SimpiCI::App::Eventd repositories[1] must be an object
   SimpiCI::App::Eventd repository acme/example (repositories[0]): repository needs name and clone_url
+  SimpiCI::App::Eventd repository ? (repositories[0]): name must not contain control characters
   ```
 
   An entry is named by its position and, if it has one, its name. What
   stands in it is not repeated: a bare URL in the place of an object may
-  carry a token.
-- `clone_url` must not contain credentials. `simpicid` checks every
-  repository in the same step:
+  carry a token. A name with a control character is not printed either.
+  The same rule holds for the `repository` and the `event` of every event,
+  an event file given to `simpici --event` included: it is the rule of
+  `SimpiCI::Event`, as the one for the clone URL is.
+- `clone_url` is one of the [accepted clone URLs](#accepted-clone-urls).
+  `simpicid` checks every repository in the same step and exits with the
+  reason:
 
   ```text
+  SimpiCI::App::Eventd repository acme/example (repositories[0]): clone URL must not contain whitespace or control characters
+  SimpiCI::App::Eventd repository acme/example (repositories[0]): clone URL must not begin with "-"
+  SimpiCI::App::Eventd repository acme/example (repositories[0]): clone URL must be a URL of the scheme https, http, ssh or file, an SSH address of the form [user@]host:path or an absolute path
   SimpiCI::App::Eventd repository acme/example (repositories[0]): clone URL must not contain credentials; provide them through a Git credential helper of the account that runs git
   SimpiCI::App::Eventd repository acme/example (repositories[0]): clone URL must not contain a password; a user name alone is accepted, and SSH authenticates with a key of the account that runs git
   ```
 
   The message names the repository and its position in the configuration,
-  never the URL. The first is given for an `http://` or `https://` URL with a
-  user part before the host, such as `https://user:token@…` or
-  `https://token@…`. The second is given for a password in the user part of
-  any other URL, such as `ssh://user:password@…` or `ftp://user:password@…`,
-  an empty password and a `%3A` included, and for `user:password@host:path`
-  without a scheme. Whitespace and control characters are refused the same
-  way, with their own reason. `git@host:path`, `ssh://git@host/path` and
-  `ssh://git@host:2222/path` stay valid; a password that contains a `/` is
-  not recognised. A clone URL travels with every event into the queue and
-  the job environment, so credentials belong to git instead: set
-  `credential.helper` in the Git configuration of the account `simpicid` runs
-  as, for example the `store` helper with its `~/.git-credentials`, a file
-  only that account may read (`gitcredentials(7)`, `git-credential-store(1)`).
-  SSH takes no password from a URL at all; give that account a key. In
-  dispatcher mode the worker account fetches the commit and needs its own.
-  `simpici-dispatch` does not repeat the clone URL check.
+  never the URL. `simpici-dispatch` does not repeat the clone URL check.
 
   The recorded tips of a repository are kept under its name and clone URL.
   With a corrected URL it therefore counts as never read: `build_initial`
@@ -260,6 +258,84 @@ CICD_IMAGE_REPOSITORY=simpici-local CICD_PUBLISH_IMAGE=false \
 The publish variable is a convention used by these scripts, not authorization.
 In production services, credentials and network access must be restricted
 independently of such guards.
+
+### Accepted clone URLs
+
+A clone URL is one of these forms and nothing else. This is the one list;
+it is the rule of `SimpiCI::Event` (`perldoc SimpiCI::Event`, CLONE URLS),
+which every event passes, whatever made it: the poller, the file given to
+`simpici --event`, or the queue entry a worker claims.
+
+| Form | Example |
+| --- | --- |
+| `https://host[:port]/path` | `https://src.ci/acme/example.git` |
+| `http://host[:port]/path` | `http://forge.internal:3000/acme/example.git` |
+| `ssh://[user@]host[:port]/path` | `ssh://git@src.ci:2222/acme/example.git` |
+| `file:///path` | `file:///srv/git/example.git` |
+| `[user@]host:path` | `git@src.ci:acme/example.git` |
+| `/path` | `/srv/git/example.git` |
+
+- The scheme is written in lower case. `[user@]host:path` is the address git
+  reads as SSH. A path is absolute: a relative one would be read from the
+  directory git happens to be run in, another one for the poller than for
+  the checkout.
+- Only the form is checked, not whether the host exists or the path names a
+  repository; that shows when git reads the URL. `http://` is neither
+  encrypted nor authenticated and belongs inside a network you trust.
+- Whitespace and control characters are refused, and so is a clone URL that
+  begins with `-`, which git would read as an option.
+- Everything else is refused, because git takes what it does not know for
+  the name of a program. `<name>::<address>` and every `<name>://` that is
+  none of git's own schemes name a remote helper, and git starts
+  `git-remote-<name>` for it in every polling cycle; the helper `ext` runs
+  the command the address gives. git compares a scheme as it is written, so
+  `HTTPS://` and `SSH://` are helpers too, and so is `persistent-https://`.
+  The other transports of git, `git://`, `git+ssh://`, `ssh+git://`,
+  `ftp://` and `ftps://`, are not accepted either: use `ssh://` or
+  `https://`.
+- A clone URL carries no credentials. It travels with every event into the
+  queue and the job environment. An `http://` or `https://` URL has no user
+  part at all, such as `https://user:token@…` or `https://token@…`. An
+  `ssh://` or `file://` URL may name a user, but no password behind it, an
+  empty password and a `%3A` included, and `user:password@host:path` without
+  a scheme is refused as well. `git@host:path`, `ssh://git@host/path` and
+  `ssh://git@host:2222/path` are valid.
+- Credentials belong to git instead: set `credential.helper` in the Git
+  configuration of the account `simpicid` runs as, for example the `store`
+  helper with its `~/.git-credentials`, a file only that account may read
+  (`gitcredentials(7)`, `git-credential-store(1)`). SSH takes no password
+  from a URL at all; give that account a key. In dispatcher mode the worker
+  account fetches the commit and needs its own.
+- Not recognised: a password that contains a `/`, a password in the path or
+  the query of a URL, and `user:password@host/path` without a scheme and
+  without a second `:`, which has the form of a host with a path. Such a URL
+  is handled like any other and stands in the `not polled` line of a
+  repository that cannot be read.
+
+**Upgrading from a version that accepted more.** Earlier versions refused
+only whitespace and credentials. A configuration that starts today can be
+refused now, with the third or the second message above, if a `clone_url` is
+
+- a `git://`, `git+ssh://`, `ssh+git://`, `ftp://` or `ftps://` URL: write
+  it as `ssh://` or `https://`;
+- a scheme in upper or mixed case, such as `HTTPS://`: write it in lower
+  case, which is the only spelling git itself reads as that transport;
+- a remote helper, `<name>::<address>` or a `<name>://` of a helper such as
+  `persistent-https://`: there is no replacement, by intention;
+- a relative path: write the absolute one;
+- a string that begins with `-`: it could never be read, and was reported
+  as `not polled` in every cycle.
+
+`https://`, `http://`, `ssh://`, `file://`, `user@host:path` and absolute
+paths without credentials are accepted as before. The daemon exits at start
+with the name and position of the repository, before it polls anything.
+`simpici --config FILE --state` applies the same check to a configuration
+and reads no remote, so it can be asked before the service is restarted. A
+corrected URL is a new repository for the recorded tips, as described above. A queue entry that was written with a clone URL that is
+refused now is not run: the worker reports it as `failed` with
+`invalid event in claim`, see [Recovery and limits](#recovery-and-limits).
+`simpici --event` refuses such an event file the same way, before it starts
+a run.
 
 ### The recorded tips of a repository
 
@@ -745,7 +821,7 @@ the worker installation and no value of the claim is in the log for it:
 
 | Reason | What happened |
 | --- | --- |
-| `invalid event in claim` | The event is not one the worker accepts: its commit, ref, clone URL, repository or source is refused by the same rules the dispatcher enqueues by, or a field is missing or of the wrong type. A queue entry written by hand or by another version |
+| `invalid event in claim` | The event is not one the worker accepts: its commit, ref, clone URL, repository, event name or source is refused by the same rules the dispatcher enqueues by, or a field is missing or of the wrong type. A queue entry written by hand or by another version |
 | `invalid secrets in claim` | The secrets of the claim are not phases with names and values |
 | `invalid secret name in claim`, `invalid secret value in claim` | A secret is not one `NAME=VALUE` line, see [where secret values are kept](#where-secret-values-are-kept-and-for-how-long) |
 | `invalid timeout in claim` | The `timeout` of the dispatcher configuration is not an integer |
@@ -1347,6 +1423,14 @@ currently set this build target and is therefore incomplete for the current
 SimpiCI-specific jobs. It is not a deployment quickstart to copy without
 review. The generic Forgejo integration shown here has not been verified
 live against a real runner.
+
+A hosted run has no native event, and the rule for
+[accepted clone URLs](#accepted-clone-urls) is not applied to it. The jobs
+get `CICD_CLONE_URL` as the workflow sets it, or made of the server URL and
+the repository if it sets none; what the workflow puts there is its own
+responsibility. A token does not belong there: every job of every phase
+would get it. The executor leaves a user part with credentials out and says
+so, see the [executor reference](../docs/executor.md#the-clone-url-of-a-run).
 
 ## 7. Reports and viewer
 

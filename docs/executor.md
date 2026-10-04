@@ -107,7 +107,7 @@ environment variables do not automatically become job variables either.
 | `CICD_SOURCE` | Source, such as `git-poll`, `manual`, `github-actions` or `forgejo-actions` |
 | `CICD_EVENT` | Event, such as `push` or `pull_request` |
 | `CICD_REPOSITORY` | Repository identity from the entry point |
-| `CICD_CLONE_URL` | Clone URL, if provided by the entry point |
+| `CICD_CLONE_URL` | Clone URL, if provided by the entry point, without credentials; see [The clone URL of a run](#the-clone-url-of-a-run) |
 | `CICD_REF` | Ref context, canonical as `refs/...` in native mode |
 | `CICD_BRANCH` / `CICD_TAG` | Branch or tag derived from the ref; otherwise empty |
 | `CICD_COMMIT` | Commit metadata; does not by itself validate the direct workspace |
@@ -133,6 +133,72 @@ candidate could include its own publish script. The decision about which
 credentials a run may receive at all belongs before the executor.
 `CICD_PUBLISH_IMAGE=false` is a convention for scripts, not a technical
 barrier to publishing.
+
+### The clone URL of a run
+
+The executor uses the clone URL for nothing itself. It fetches nothing and
+passes the value to no command as an option: it writes it into the event
+file, which providers and jobs get read-only, and into the environment of
+every job as `CICD_CLONE_URL`. Where the value comes from decides what it
+can be:
+
+- **Native runs.** The runner and the worker hand over the clone URL of
+  their event, which is one of the
+  [accepted clone URLs](../deploy/README.md#accepted-clone-urls): no
+  credentials, no remote helper, nothing that begins with `-`. The executor
+  passes it on as it is, a user name such as `ssh://git@host/path` included.
+- **Hosted and direct runs.** The value is `CICD_CLONE_URL` of the caller's
+  environment, or `<server URL>/<repository>.git` from `GITHUB_SERVER_URL`
+  or `FORGEJO_SERVER_URL` if the caller sets none. The executor does not
+  hold it against the native rule: its form, its scheme and whether it names
+  a repository at all are the responsibility of the workflow or of whoever
+  calls the executor, and a job must not treat it as checked.
+
+One thing the executor does in every case, because every job of every phase
+gets the value: it leaves out a user part that the native rule does not
+accept. The user part is what stands between `://` and the last `@` ahead of
+the first `/`. Only the user name of an `ssh://` or `file://` URL stays, if
+it contains no `:` and no `%3A`; behind every other scheme a lone user part
+may be a token and is left out too. Without a scheme it is the
+`user:password` of `user:password@host:path`. `https://user:token@host/path`
+and `https://token@host/path` become `https://host/path`,
+`ssh://user:password@host/path` becomes `ssh://host/path`, and the executor
+writes one line to standard error that names no part of the URL:
+
+```text
+SimpiCI: CICD_CLONE_URL carried credentials; its user part is not passed on to the jobs
+```
+
+A password that contains a `/`, or one in the path or the query of the URL,
+is not recognised and is passed on. Credentials for a job do not belong in
+the clone URL.
+
+### The event file
+
+The same holds for the other values of a hosted or direct run. `CICD_REF`,
+`CICD_COMMIT`, `CICD_REPOSITORY`, `CICD_SOURCE` and `CICD_EVENT` come from
+the caller's environment or from the hosted context and are not held
+against the native event rules: that the ref is canonical, that the commit
+is a full object id and that it is the commit of the checkout are the
+responsibility of the workflow or of whoever calls the executor. A job must
+not take them for checked values.
+
+The one thing the executor requires of the six values it writes into the
+event file, `source`, `event`, `repository`, `clone_url`, `ref` and
+`commit`, is that the file can hold them: none contains a line end or
+another control character. Otherwise it writes no event file, starts no
+provider and no job, and exits with `65` and one line on standard error
+that names the field and not the value:
+
+```text
+SimpiCI: event field ref must not contain a line end or another control character
+```
+
+A control character is a byte below `0x20` or `0x7f`; a `"` or a `\` is
+escaped, and everything else is written as it is. A native event never has
+such a value: `SimpiCI::Event` refuses a control character in each of these
+fields, so the check is a second line there and the only one for a hosted
+or direct run.
 
 ## Job files, images and phases
 
@@ -173,6 +239,7 @@ has finished; this is not an immediate fail-fast abort.
 | All existing jobs skipped | Executor currently exits with `0`, not a distinct overall `skipped` status |
 | No jobs present | Executor exit `127`; at least one repository or provider job must exist |
 | Job plan error | For example, exit `64` for invalid names or duplicate job IDs |
+| Event value with a line end or another control character | Executor exit `65` before any provider or job starts, see [The event file](#the-event-file) |
 
 Provider or host errors can produce other nonzero codes. The executor has no
 per-job timeout option of its own; the native runner limits the executor's

@@ -141,6 +141,7 @@ connection it could not make.
 
 The clone URLs of the configuration are not checked here. This program reads
 no remote, and a queued event passed L<SimpiCI::Event> when it was enqueued;
-C<simpicid> refuses a clone URL with credentials before it polls.
+C<simpicid> refuses a clone URL that is none of L<SimpiCI::Event/CLONE URLS>
+before it polls.
 
 =cut

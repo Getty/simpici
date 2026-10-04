@@ -18,15 +18,28 @@ my $program = $root->child('upload-pack.sh');
 $program->spew_utf8("#!/bin/sh\ntouch '".$marker."'\nexit 1\n");
 $program->chmod(0755);
 
+my %fields = (source => 'manual', event => 'push', repository => 'owner/project',
+  ref => 'refs/heads/main', commit => 'a' x 40);
+
+# An event has no such clone URL: its constructor refuses it.
+like dies { SimpiCI::Event->new(%fields, clone_url => '--upload-pack='.$program) },
+  qr/\ASimpiCI::Event clone URL must not begin with "-" at /,
+  'SimpiCI::Event refuses a clone URL that begins with a dash';
+
+# The runner does not rely on that. This is an event that never passed its
+# constructor: of the right class, with whatever it was made of.
+sub unchecked_event {
+  my ( %given ) = @_;
+  return bless { payload => {}, %fields, %given }, 'SimpiCI::Event';
+}
+
 my $number = 0;
 sub checkout_of {
   my ( $clone_url ) = @_;
   my $state = $root->child('state'.++$number);
-  my $event = SimpiCI::Event->new(source => 'manual', event => 'push',
-    repository => 'owner/project', clone_url => $clone_url,
-    ref => 'refs/heads/main', commit => 'a' x 40);
   my $report = SimpiCI::Runner->new(store => SimpiCI::Store->new(root => $state),
-    timeout => 30, runner_script => $root->child('never-started'))->run($event);
+    timeout => 30, runner_script => $root->child('never-started'))
+    ->run(unchecked_event(clone_url => $clone_url));
   chomp(my $remote = qx(git -C '@{[ $state->child('work', $report->{run}) ]}' config --get remote.origin.url));
   return ( $report, $remote, $state->child('public', 'runs', $report->{run}.'.log')->slurp_utf8 );
 }

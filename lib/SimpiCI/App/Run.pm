@@ -350,7 +350,9 @@ and none of the options of a run.
 
 Event JSON containing C<source>, C<event>, C<repository>, C<clone_url>,
 C<ref>, and a full 40- or 64-character lowercase hexadecimal C<commit>.
-Required for a run.
+Required for a run. The C<clone_url> is one of
+L<SimpiCI::Event/CLONE URLS>, as for a configured repository; an event
+L<SimpiCI::Event> refuses starts no run.
 
 =item B<--root> I<directory>
 

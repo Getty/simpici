@@ -113,10 +113,14 @@ sub check_repositories {
     croak __PACKAGE__.' repositories['.$index.'] must be an object'
       unless ref $repository eq 'HASH';
     my $name = $repository->{name};
-    my $where = __PACKAGE__.' repository '.( defined $name && !ref $name ? $name : '?' )
+    # A name the event would refuse is not printed: it is no line of text.
+    my $unnamed = defined $name && !ref $name
+      ? $class->event_class->name_rejection($name) : 'no string';
+    my $where = __PACKAGE__.' repository '.( defined $unnamed ? '?' : $name )
       .' (repositories['.$index.']): ';
     croak $where.'repository needs name and clone_url'
       if grep { !defined || ref || !length } $repository->@{qw( name clone_url )};
+    croak $where.'name '.$unnamed if defined $unnamed;
     my $reason = $class->event_class->clone_url_rejection($repository->{clone_url}) // next;
     croak $where.$reason;
   }
@@ -132,8 +136,8 @@ sub interrupted_message {
 sub unread_message {
   my ( $class, $repository, $reason ) = @_;
 
-  # run refuses a clone URL with credentials before it polls, so it never
-  # gets here with one; a direct caller is not held to that.
+  # run refuses a clone URL the rule does not accept before it polls, so it
+  # never gets here with one; a direct caller is not held to that.
   my $configured = $repository->{clone_url} // '';
   my $clone_url = $class->event_class->clone_url_without_credentials($configured);
   $reason =~ s/\Q$configured\E/$clone_url/g if length $configured;
@@ -192,17 +196,27 @@ step.
 In either mode the daemon first looks at C<repositories>, see
 L</check_repositories>, and exits before it polls if an entry cannot be used.
 C<repositories> has to be a list of objects, each with a C<name> and a
-C<clone_url> that are nonempty strings:
+C<clone_url> that are nonempty strings, the name without a control
+character, as L<SimpiCI::Event/name_rejection> has it for the repository of
+an event:
 
   SimpiCI::App::Eventd repositories must be a list
   SimpiCI::App::Eventd repositories[1] must be an object
   SimpiCI::App::Eventd repository owner/project (repositories[0]): repository needs name and clone_url
+  SimpiCI::App::Eventd repository ? (repositories[0]): name must not contain control characters
+
+A name with a control character is not printed, in this message or in the
+one for another mistake of its entry: the C<?> stands for it, as for a name
+that is missing.
 
 It then holds every C<clone_url> against
-L<SimpiCI::Event/clone_url_rejection>:
+L<SimpiCI::Event/clone_url_rejection>, which accepts the forms listed in
+L<SimpiCI::Event/CLONE URLS> and gives one of five reasons for anything
+else, such as:
 
+  SimpiCI::App::Eventd repository owner/project (repositories[0]): clone URL must be a URL of the scheme https, http, ssh or file, an SSH address of the form [user@]host:path or an absolute path
+  SimpiCI::App::Eventd repository owner/project (repositories[0]): clone URL must not begin with "-"
   SimpiCI::App::Eventd repository owner/project (repositories[0]): clone URL must not contain credentials; provide them through a Git credential helper of the account that runs git
-  SimpiCI::App::Eventd repository owner/project (repositories[0]): clone URL must not contain a password; a user name alone is accepted, and SSH authenticates with a key of the account that runs git
 
 A message names the repository, if it has a name, and its position in the
 configuration, never the URL or what else stands in the entry. The credentials
@@ -210,6 +224,12 @@ of an C<https://user:token@...> URL belong in the Git configuration of the
 account the daemon runs as, see C<gitcredentials(7)>; the password of an
 C<ssh://user:password@...> URL is replaced by a key of that account. In
 dispatcher mode the worker fetches the commit and needs its own.
+
+The check is made once, at the start, also for what git could never read as
+the address of a repository: a clone URL that begins with C<->, and one that
+names a remote helper, as C<ext::...> or a scheme git does not know. Left to
+the poll, the first would be reported as not polled in every cycle, and for
+the second git would start the program of the helper in every cycle.
 
 A repository whose refs cannot be read does not end the daemon. It writes one
 line to standard error and goes on with the next repository:
@@ -334,11 +354,12 @@ without one. C<simpici> finds the recorded tips of the daemon by it.
 Croaks for the first entry of C<repositories> in a decoded configuration that
 the daemon could not poll or build an event from: C<repositories> is no list,
 an entry is no object, its C<name> or C<clone_url> is missing, empty or no
-string, or its C<clone_url> is refused by
-L<SimpiCI::Event/clone_url_rejection>. The message gives the index of the
-entry, its name if it has one and the reason, never the clone URL or any
-other value of the entry: a URL with a token may stand in the place of the
-object. L</run> calls it before it polls.
+string, its C<name> is refused by L<SimpiCI::Event/name_rejection> or its
+C<clone_url> by L<SimpiCI::Event/clone_url_rejection>. The message gives the
+index of the entry, its name if it has one that can be printed and the
+reason, never the clone URL or any other value of the entry: a URL with a
+token may stand in the place of the object. L</run> calls it before it
+polls.
 
 It is no validation of the whole configuration. C<refs>, C<build_initial>,
 the top-level settings and everything else in an entry are not looked at and
@@ -370,9 +391,9 @@ Formats the single log line for a repository that was not polled, be it that
 its refs could not be read, that it has none yet or that
 L<SimpiCI::Source::GitPoll/rejection> refused what was read. The clone URL is
 shown as L<SimpiCI::Event/clone_url_without_credentials> gives it, also where
-the reason repeats it, so the user part the clone URL rule refuses is left
-out. L</run> refuses such a URL before it polls, so this only matters to a
-direct caller.
+the reason repeats it, so the user part of a URL the clone URL rule refuses
+is left out. L</run> refuses such a URL before it polls, so this only
+matters to a direct caller.
 
 =head1 OPTIONS
 

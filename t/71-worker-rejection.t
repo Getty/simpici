@@ -148,7 +148,7 @@ subtest 'an event the worker refuses' => sub {
   is log_of(1), "SimpiCI::Worker run 1 aborted: invalid event in claim\n",
     'the log is the reason, one of the list, and nothing else';
   unlike log_of(1), qr/\Q$secret\E|\Q$password\E/, 'without a secret value or the URL';
-  like $warned, qr/\ASimpiCI::Worker run 1 aborted: invalid event in claim: SimpiCI::Event clone URL must not contain a password; [^\n]* runs git at [^\n]+ line \d+\.\n\z/,
+  like $warned, qr/\ASimpiCI::Worker run 1 aborted: invalid event in claim: SimpiCI::Event clone URL must be a URL of the scheme [^\n]* or an absolute path at [^\n]+ line \d+\.\n\z/,
     'standard error has the reason and what the event was refused for, in one line';
   unlike $warned, qr/\Q$secret\E|\Q$password\E/, 'without a value there either';
   unlike log_of(1), qr/$raised_at|\Q$worker_root\E/,

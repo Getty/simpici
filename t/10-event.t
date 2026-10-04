@@ -29,4 +29,60 @@ like dies { SimpiCI::Event->new(%args, commit => 'abc123') },
   qr/full hexadecimal object id/,
   'rejects abbreviated commits';
 
+# A repository name and an event name are free text, on one line: they go
+# into the event file of every job, the deduplication key and the log lines
+# of the operator. The source is one of three words.
+for my $field (qw( repository event )) {
+  for my $case (
+    [ 'a tab', "one\ttwo" ], [ 'a line end', "one\ntwo" ], [ 'a trailing line end', "one\n" ],
+    [ 'a carriage return', "one\rtwo" ], [ 'a NUL', "one\0two" ], [ 'an escape', "one\etwo" ],
+    [ 'a DEL', "one\x7ftwo" ]
+  ) {
+    my ( $label, $value ) = @$case;
+    my $died = dies { SimpiCI::Event->new(%args, $field => $value) };
+    like $died, qr/\ASimpiCI::Event \Q$field\E must not contain control characters at /,
+      'rejects '.$label.' in '.$field;
+    unlike $died // '', qr/one|two/, 'without repeating it';
+  }
+  for my $value ( 'two words', "gr\x{fc}n/project", 'owner/pro"ject', '' ) {
+    ok lives { SimpiCI::Event->new(%args, $field => $value) }, 'accepts "'.$value.'" as '.$field;
+  }
+}
+if (ok(SimpiCI::Event->can('name_rejection'), 'the rule for both is one method')) {
+  is(SimpiCI::Event->name_rejection("one\ttwo"), 'must not contain control characters',
+    'which returns its reason');
+  is(SimpiCI::Event->name_rejection('LEDaquaristik/sunriser'), undef, 'or nothing');
+}
+like dies { SimpiCI::Event->new(%args, source => "manual\n") }, qr/type constraint/,
+  'a source is one of the three it may be, and so never has one';
+
+# The forms of a clone URL, one of each. The rule itself, case by case, is in
+# t/45-config-clone-url.t.
+for my $clone_url (
+  'https://src.ci/ledaquaristik/sunriser.git',
+  'http://forge.internal:3000/ledaquaristik/sunriser.git',
+  'ssh://git@src.ci:2222/ledaquaristik/sunriser.git',
+  'file:///srv/git/sunriser.git',
+  'git@src.ci:ledaquaristik/sunriser.git',
+  'src.ci:ledaquaristik/sunriser.git',
+  '/srv/git/sunriser.git'
+) {
+  ok lives { SimpiCI::Event->new(%args, clone_url => $clone_url) }, 'accepts '.$clone_url;
+}
+like dies { SimpiCI::Event->new(%args, clone_url => '--upload-pack=/srv/git/program') },
+  qr/\ASimpiCI::Event clone URL must not begin with "-" at /,
+  'rejects a clone URL git would read as an option';
+for my $clone_url (
+  'ext::/srv/git/program',
+  'persistent-https://token@src.ci/ledaquaristik/sunriser.git',
+  'git://src.ci/ledaquaristik/sunriser.git',
+  'HTTPS://src.ci/ledaquaristik/sunriser.git',
+  'ledaquaristik/sunriser.git'
+) {
+  my $died = dies { SimpiCI::Event->new(%args, clone_url => $clone_url) };
+  like $died, qr/\ASimpiCI::Event clone URL must be a URL of the scheme https, http, ssh or file, an SSH address of the form \[user\@\]host:path or an absolute path at /,
+    'rejects the form of '.$clone_url;
+  unlike $died, qr/src\.ci|sunriser|program/, 'without repeating it';
+}
+
 done_testing;

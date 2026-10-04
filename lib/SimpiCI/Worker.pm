@@ -731,7 +731,8 @@ dispatcher publishes the log it receives:
 
 The event of the claim is no object with the fields of an event, or
 L<SimpiCI::Event> refuses it for its commit, its ref, its clone URL, its
-repository or its source. Standard error has the rule it broke. The
+repository, its event name or its source. Standard error has the rule it
+broke. The
 dispatcher enqueues only what the same class accepts, so this is a queue
 entry written by hand or by another version.
 

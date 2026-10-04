@@ -393,13 +393,18 @@ perl -Ilib bin/simpicid --config simpici.json
   building it.
 - `refs` is the **polling filter**, not global authorization for other entry
   points such as the one-shot CLI.
-- `clone_url` must not contain credentials: with `https://user:token@…` or a
-  password in any other URL, such as `ssh://user:password@…`, `simpicid`
-  exits at start and names the repository. Give them to git through a
-  credential helper or an SSH key of the account that runs it; see the
-  [operations guide](deploy/README.md#2-polling-on-one-machine).
+- `clone_url` is an `https://`, `http://`, `ssh://` or `file://` URL, an SSH
+  address such as `git@host:path` or an absolute path, and contains no
+  credentials. With anything else, such as `https://user:token@…`,
+  `ssh://user:password@…`, a remote helper like `ext::…`, another scheme or
+  a string that begins with `-`, `simpicid` exits at start and names the
+  repository. Give credentials to git through a credential helper or an SSH
+  key of the account that runs it. The forms, the reasons and what an
+  upgrade can refuse are in the
+  [operations guide](deploy/README.md#accepted-clone-urls).
 - Every entry of `repositories` is an object with a `name` and a
-  `clone_url`; `simpicid` exits at start otherwise.
+  `clone_url`, the name without control characters such as a tab or a line
+  end; `simpicid` exits at start otherwise.
 - `timeout` limits the native executor's runtime.
 - `ls_remote_timeout` is a separate, optional limit for reading the refs of
   one repository; it defaults to 60 seconds.
@@ -445,7 +450,11 @@ perl -Ilib bin/simpici --event event.json --root var
 
 Required event fields are `source`, `event`, `repository`, `clone_url`, `ref`
 and `commit`. The commit must be a full lowercase 40- or 64-character hex OID;
-the ref must be canonical, such as `refs/heads/main`.
+the ref must be canonical, such as `refs/heads/main`; the clone URL must be
+one of the [accepted clone URLs](deploy/README.md#accepted-clone-urls), as
+for a configured repository; `repository` and `event` are one line of text
+without control characters, and `source` is `git-poll`, `webhook` or
+`manual`.
 The [operations guide](deploy/README.md) includes an example that generates
 an event file.
 

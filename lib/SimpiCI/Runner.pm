@@ -4,12 +4,14 @@ use Moo;
 
 # ABSTRACT: Exact-checkout SimpiCI run supervisor
 
+use SimpiCI::Event;
 use SimpiCI::Store;
 use Carp qw( croak );
 use File::Which qw( which );
 use IO::Select;
 use Path::Tiny qw( path );
 use POSIX qw( WNOHANG setpgid strftime );
+use Scalar::Util qw( blessed );
 use Time::HiRes qw( sleep time );
 use Types::Standard qw( CodeRef Int InstanceOf );
 use namespace::autoclean;
@@ -76,9 +78,17 @@ sub termination_grace { 5 }
 # How long one docker command of the supervisor itself may take.
 sub docker_timeout { 30 }
 
+# The class of what is run. Its constructor is where a commit is held to be
+# an object id and a clone URL to be one git reads as an address.
+sub event_class { 'SimpiCI::Event' }
+
 sub run {
   my ( $self, $event, $assigned_run ) = @_;
 
+  # Not left to the caller, and said without what was given: the commit and
+  # the clone URL of whatever this is would go on the command line of git.
+  croak __PACKAGE__.' event must be a '.$self->event_class
+    unless blessed $event && $event->isa($self->event_class);
   croak __PACKAGE__.' invalid assigned run'
     if defined $assigned_run && $assigned_run !~ /\A[1-9][0-9]*\z/;
   $self->_stopped_by(undef);
@@ -141,12 +151,19 @@ sub _run {
   # Quietly: git would say where it made the repository, and the log of a
   # run is published.
   my $result = $git->(120, 'init', '--quiet', $workspace->stringify);
-  # The event accepts a clone URL that begins with "-"; its commit, being an
-  # object id, cannot.
+  # Neither the clone URL nor the commit of an event begins with "-": its
+  # constructor refuses both. The "--" holds without that rule. It is what
+  # every git takes for the end of the options of these two commands; at
+  # fetch, the commit would otherwise name the program to run as upload-pack.
   $result = $git->(120, '-C', $workspace->stringify,
     'remote', 'add', '--', 'origin', $event->clone_url) if $result->{exit_code} == 0;
   $result = $git->(300, '-C', $workspace->stringify,
-    'fetch', '--depth=1', 'origin', $event->commit) if $result->{exit_code} == 0;
+    'fetch', '--depth=1', '--', 'origin', $event->commit) if $result->{exit_code} == 0;
+  # No "--" here: checkout would take the commit behind it for a path. The
+  # "--end-of-options" that stands for it is known to git from 2.24 on and
+  # works at checkout from 2.44 on, and is left out for every git before
+  # that. Only what the fetch found at the remote gets here, and no option
+  # of checkout runs a program.
   $result = $git->(120, '-C', $workspace->stringify,
     'checkout', '--detach', $event->commit) if $result->{exit_code} == 0;
 
@@ -686,12 +703,36 @@ away than the run.
 
 =head2 run
 
+  my $report = $runner->run($event);
+  my $report = $runner->run($event, $assigned_run);
+
 Allocates a run, checks out the event's exact commit detached, invokes the
 shared container executor, writes public report JSON excluding C<payload> and
 C<clone_url>, captures unfiltered logs, and returns a report hash.
 
+The event is an object of L</event_class>, a L<SimpiCI::Event> or one of a
+subclass. For anything else, the fields of an event as a hash or an object
+of another class with the same methods included, C<run> croaks with
+
+  SimpiCI::Runner event must be a SimpiCI::Event
+
+before it allocates a run or writes anything, and without repeating what it
+was given. The clone URL and the commit of the event go on the command line
+of git, and it is the constructor of that class that holds the commit to be
+an object id and the clone URL to be one of L<SimpiCI::Event/CLONE URLS>;
+the runner does not rely on its caller for that.
+
 The checkout is four git commands: C<init>, C<remote add>, C<fetch> and
-C<checkout>. Each starts only after the one before it exited with 0, and the
+C<checkout>. C<remote add> and C<fetch> are given C<--> ahead of the remote,
+the clone URL and the commit, so that git reads none of them as an option
+even if it began with C<->; at C<fetch>, the commit would otherwise name
+the program git runs as upload-pack. Every git takes C<--> for that.
+C<checkout --detach> gets the commit as it is: behind C<--> it would be a
+path, and the C<--end-of-options> that stands for it is known to git only
+from 2.24 on, and at C<checkout> from 2.44 on. Only a commit the fetch found
+at the remote gets that far.
+
+Each command starts only after the one before it exited with 0, and the
 executor only after all four did. The first command that ends in another way
 ends the run, and how it ended is the result of the run:
 
@@ -741,6 +782,11 @@ C<TERM>.
 Croaks with C<lost> and the command if the way a command ended cannot be
 read, as in a process that ignores C<SIGCHLD>: the report then stays at
 C<running>, because there is no result to publish.
+
+=head2 event_class
+
+Returns C<SimpiCI::Event>, the class L</run> takes an event of. The one
+place that names it.
 
 =head2 container_label
 
