@@ -1,0 +1,29 @@
+---
+claimed_at: 2026-10-04T04:43:12Z
+claimed_by: simpici
+class: standard
+completed: 2026-10-04T04:43:12Z
+created: 2026-10-04T01:58:50Z
+id: 18
+priority: medium
+started: 2026-10-04T04:18:45Z
+status: done
+tags:
+- daemon
+- polling
+- decision
+title: 'Poller: teilweise verschwundene Refs — Zustand zusammenführen statt ersetzen?'
+updated: 2026-10-04T04:43:12Z
+---
+
+Befund aus k14 (aus dem Code gelesen, nicht per Test belegt): Verschwinden nur einige Refs (z. B. alle Tags weg, main bleibt), fallen sie aus dem State; tauchen sie wieder auf, gelten sie als neu und werden gebaut, ein alter Tag mit Publish-Token. Option: State zusammenführen statt ersetzen (verschwundene Refs behalten ihren letzten Tip). Folge: ein gelöschter und auf denselben Commit neu gesetzter Tag baut nicht neu; auf einen anderen Commit neu gesetzt baut er. State wächst um gelöschte Refs. Entscheidung Getty; Empfehlung Hub: zusammenführen, weil der Poller hier als Release-Auslöser dient und ein Wiederauftauchen kein neues Ereignis ist.
+
+Entscheidung Getty (2026-10-04): zusammenführen. Verschwundene Refs behalten ihren letzten Tip im State; ein Wiederauftauchen auf demselben Commit ist kein neues Ereignis, auf einem anderen Commit schon. Tests: (1) Tags verschwinden, main bleibt, Tags kommen auf denselben Commits zurück -> kein Lauf; (2) ein Tag kommt auf anderem Commit zurück -> ein Lauf; (3) ein wirklich neuer Ref -> ein Lauf. deploy/README.md: Verhalten und dass der State gelöschte Refs behält.
+
+2026-10-04 04:39 Worker: Ursache bestaetigt in lib/SimpiCI/Source/GitPoll.pm poll (write_json ersetzt den State durch die Beobachtung). Test t/47-poll-merge.t zuerst, beide Modi (local, dispatcher) ueber SimpiCI::App::Eventd->run --once.
+
+2026-10-04 04:41 Also found (nicht in k18 behoben, Hub entscheidet): (a) Es gibt keinen Weg, einen einzelnen Ref zu vergessen; nur die ganze State-Datei loeschen, und deren Name steht nur in der 'keeping recorded tips'-Zeile. (b) Die k14-Regel schuetzt den State nicht mehr (das Zusammenfuehren wuerde ihn ebenso erhalten); sie ist nur noch Betriebssignal, ihre Zahl zaehlt jetzt auch verschwundene und nicht mehr konfigurierte Refs. (c) Refs ausserhalb eines verengten refs-Filters bleiben im State; wieder erweitert bauen sie nur, wenn sie sich bewegt haben. (d) poll liest und schreibt den State ohne Sperre (schon vorher so).
+
+2026-10-04 04:41 Done: lib/SimpiCI/Source/GitPoll.pm poll schreibt jetzt { recorded, ueberlagert von observed } statt nur observed; verschwundene Refs behalten ihren letzten Tip. Neuer Test t/47-poll-merge.t (36 Tests, local und dispatcher ueber Eventd->run --once): Tags weg/main bleibt/Tags zurueck auf denselben Commits -> kein Lauf; Tag zurueck auf anderem Commit -> ein Lauf; neuer Tag -> ein Lauf; State haelt die Tips verschwundener Refs. Gegen den alten Code rot (Fall 1 und State-Inhalt), danach gruen. Doku: deploy/README.md, README.md, POD in GitPoll.pm und Eventd.pm. prove -lr t/: Files=23, Tests=715, PASS. Nicht committet, Changes unberuehrt, kein dzil test.
+
+2026-10-04 04:43 Committed as 4c7d4e3 (4c7d4e337839c03af984029f82017ebdb221bc56) on k20-k18, with the Changes entry merged into the polling bullet.
