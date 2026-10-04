@@ -84,7 +84,8 @@ for my $mode (qw( local dispatcher )) {
     root => $root->child($mode)->stringify, mode => $mode, repositories => [ $repository ]
   }));
   my $state = state_file($mode, $repository);
-  my $recorded = sub { $json->decode($state->slurp_utf8) };
+  # The tips of the state; what else it holds is the matter of t/48.
+  my $recorded = sub { $json->decode($state->slurp_utf8)->{tips} };
 
   #### The baseline
 

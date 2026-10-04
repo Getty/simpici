@@ -43,7 +43,7 @@ sub run {
   # In either mode and before anything is polled: an entry of the wrong
   # shape or a refused URL would show too, but with the daemon long running.
   $class->check_repositories($config);
-  my $store = SimpiCI::Store->new(root => path($config->{root} // './var'));
+  my $store = $class->store($config);
   my $configured_runner = $runner_script // $config->{runner};
   my $runner = SimpiCI::Runner->new(
     store   => $store,
@@ -68,10 +68,11 @@ sub run {
           ? ( ls_remote_timeout => $config->{ls_remote_timeout} ) : ()
       );
       # Only the observation is survivable: a remote that is unreadable, has
-      # no refs or returns none changes no state, and the next cycle reads it
-      # again. Both of its queries are made in observe, for that reason. A
-      # failing run or queue still ends the daemon, and so do recorded tips
-      # that cannot be read: the rejection is asked for outside the eval.
+      # no refs or shows none of those its last poll saw changes no state,
+      # and the next cycle reads it again. Both of its queries are made in
+      # observe, for that reason. A failing run or queue still ends the
+      # daemon, and so do recorded tips that cannot be read: the rejection
+      # is asked for outside the eval.
       my $observed = eval { $poller->observe };
       my $unpolled = $observed ? $poller->rejection($observed) : $@;
       if (defined $unpolled) {
@@ -85,6 +86,12 @@ sub run {
     sleep($config->{interval} // 60);
   }
   return $status;
+}
+
+sub store {
+  my ( $class, $config ) = @_;
+
+  return SimpiCI::Store->new(root => path($config->{root} // './var'));
 }
 
 sub check_repositories {
@@ -179,23 +186,39 @@ stay as they are, so nothing is built merely because it is back; a repository
 that was never read gets its first observation then, subject to
 C<build_initial>.
 
-A repository that answers without any of the configured refs while tips are
-recorded for it is treated the same way, with its own reason:
+A repository that answers without any ref, while configured refs are missed
+that its last poll still saw, is treated the same way, with its own reason:
 
-  simpicid: repository owner/project (https://example/owner/project.git) not polled: remote returned no refs, keeping recorded tips: 2 in state/repositories/<id>.json
+  simpicid: repository owner/project (https://example/owner/project.git) not polled: remote returned no refs, configured refs seen at the last poll: 2
 
 This is what a mirror gives that was set up again and is not synchronised
-yet. Its recorded tips stay, so refs that return where they were build
-nothing. If the refs are gone for good, remove the repository from the
-configuration or delete the named file below the state root; the repository
-then counts as never read.
+yet. The line is a signal and nothing more: the recorded tips would stay
+without it, as those of any ref that disappears do, so refs that return where
+they were build nothing. The number counts the refs that are missed, not the
+recorded ones: a ref that was gone at the last poll already, or that C<refs>
+no longer selects, is not among them, and an answer that misses none is
+polled without a line. If the refs are gone for good, forget them with
+C<simpici --forget>, see L<SimpiCI::App::Run>, or remove the repository from
+the configuration.
 
 Refs that disappear while others stay are not reported. Each keeps its last
 tip in the state and starts no run; back on that commit it builds nothing, on
 another commit it is built like a ref that moved. Only a ref that was never
-recorded is new. The state therefore holds every ref that was ever observed
-for the repository and drops none by itself, see
-L<SimpiCI::Source::GitPoll/poll>.
+recorded is new. The same holds for a ref that C<refs> no longer selects: its
+tip stays, and when the filter is widened again, the ref is built if it has
+moved since and not otherwise. The state therefore holds every ref that was
+ever observed for the repository and drops none by itself, see
+L<SimpiCI::Source::GitPoll/poll>. C<simpici --state> shows what is recorded
+and which of it the last poll did not see, C<simpici --forget> takes one ref
+out.
+
+The state of a repository is written only when a poll changes it, and it is
+locked from reading to writing, the runs of the poll included. A second
+C<simpicid> on the same state root, a C<--once> beside the running daemon for
+instance, therefore waits for a repository the first is polling, in local
+mode until its build has ended, and then sees what the first recorded: no
+tip is lost and no change is built twice. C<simpici --forget> waits in the
+same way.
 
 A repository that has no refs at all and nothing recorded is not polled
 either:
@@ -260,6 +283,13 @@ Class used to check the grants in dispatcher mode.
 Class whose clone URL rule L</check_repositories> applies and L</unread_message>
 shows a clone URL by.
 
+=head2 store
+
+  my $store = SimpiCI::App::Eventd->store($config);
+
+The L<SimpiCI::Store> of a decoded configuration: its C<root>, or F<./var>
+without one. C<simpici> finds the recorded tips of the daemon by it.
+
 =head2 check_repositories
 
   SimpiCI::App::Eventd->check_repositories($config);
@@ -313,9 +343,9 @@ Poll every configured repository once and exit instead of sleeping. A normally
 completed poll returns zero even if a local build failed; inspect the run
 reports for build status. The exit status is 1 if the refs of a repository
 could not be read, be it that the query failed or that it ran into
-C<ls_remote_timeout>, if it returned none while tips are recorded for it, or
-if it has none at all and nothing is recorded; the other repositories are
-polled all the same.
+C<ls_remote_timeout>, if it returned none while configured refs of its last
+poll are missed, or if it has none at all and nothing is recorded; the other
+repositories are polled all the same.
 
 =item B<--runner> I<file>
 

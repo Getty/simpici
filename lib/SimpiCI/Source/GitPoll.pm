@@ -9,6 +9,7 @@ use Digest::SHA qw( sha256_hex );
 use SimpiCI::Runner;
 use SimpiCI::Store;
 use Carp qw( croak );
+use Fcntl qw( LOCK_EX );
 use IO::Select;
 use JSON::MaybeXS;
 use Path::Tiny qw( path );
@@ -25,9 +26,9 @@ has store => (
 );
 
 has runner => (
-  is       => 'ro',
-  isa      => Object,
-  required => 1,
+  is        => 'ro',
+  isa       => Object,
+  predicate => 1,
 );
 
 has repository => (
@@ -42,15 +43,23 @@ has ls_remote_timeout => (
   default => sub { 60 },
 );
 
+has _json => (is => 'lazy');
+
+sub _build__json { JSON::MaybeXS->new(canonical => 1) }
+
 sub poll {
   my ( $self, $observed ) = @_;
 
+  croak __PACKAGE__.' cannot poll without a runner' unless $self->has_runner;
   my $repository = $self->repository;
-  my $recorded = $self->_recorded;
   $observed //= $self->observe;
-  my $rejection = $self->rejection($observed);
+  # From the reading of the state to its writing, one process has it: what
+  # another recorded in between would be gone with the write of this one.
+  my $lock = $self->_lock;
+  my $recorded = $self->_state;
+  my $rejection = $self->_rejection($observed, $recorded);
   croak __PACKAGE__.' '.$rejection if defined $rejection;
-  my $previous = $recorded // {};
+  my $previous = $recorded ? $recorded->{tips} : {};
   my @reports;
 
   for my $ref (sort keys $observed->%*) {
@@ -68,22 +77,103 @@ sub poll {
     ));
   }
   # A ref the remote no longer shows keeps its last tip: back on that commit
-  # it is no event, and the state never forgets a ref by itself.
-  $self->store->write_json($self->_state_file, { $previous->%*, $observed->%* });
+  # it is no event, and the state never forgets a ref by itself. It only
+  # says that this observation lacked it.
+  my %tips = ( $previous->%*, $observed->%* );
+  my $state = {
+    tips   => \%tips,
+    absent => [ sort grep { !exists $observed->{$_} } keys %tips ]
+  };
+  # A baseline is written even if it is empty, anything later only if it
+  # differs from what is recorded.
+  $self->store->write_json($self->_state_file, $state)
+    unless $recorded && $self->_json->encode($recorded) eq $self->_json->encode($state);
   return \@reports;
 }
 
 sub rejection {
   my ( $self, $observed ) = @_;
 
-  # A reachable remote without one usable ref says nothing about the recorded
-  # tips. Merged, it would leave them as they are too; refused, it is told
-  # apart from a poll that found nothing new.
-  return if $observed->%*;
-  my $recorded = keys( ( $self->_recorded // {} )->%* );
-  return unless $recorded;
-  return 'remote returned no refs, keeping recorded tips: '.$recorded.' in '
-    .$self->_state_file;
+  return $self->_rejection($observed, scalar $self->_state);
+}
+
+sub _rejection {
+  my ( $self, $observed, $recorded ) = @_;
+
+  # A reachable remote without one usable ref is merged like any other
+  # observation and takes no tip away. It is refused all the same while refs
+  # are missed that the filter still asks for and the last poll still saw:
+  # that tells a repository which lost its refs from one without changes.
+  return if $observed->%* || !$recorded;
+  my %absent = map { $_ => 1 } $recorded->{absent}->@*;
+  my $missed = grep { !$absent{$_} && $self->configured($_) } keys $recorded->{tips}->%*;
+  return unless $missed;
+  return 'remote returned no refs, configured refs seen at the last poll: '.$missed;
+}
+
+sub configured {
+  my ( $self, $ref ) = @_;
+
+  my @patterns = ( $self->repository->{refs} // [] )->@*;
+  return 1 unless @patterns;
+  for my $pattern (@patterns) {
+    # A pattern is held against the end of the name, from its start or from
+    # a slash. One that is no expression matches nothing, as for git.
+    my $glob = $self->_glob($pattern);
+    my $tail = eval { qr{(?:\A|/)$glob\z}s } // next;
+    return 1 if $ref =~ $tail;
+  }
+  return 0;
+}
+
+# A pattern of git ls-remote as a regular expression: * and ? match a slash
+# like any other character, [...] is a set, and a backslash takes the next
+# character as it stands.
+sub _glob {
+  my ( $self, $pattern ) = @_;
+
+  my $class = qr/\[:(?:alnum|alpha|blank|cntrl|digit|graph|lower|print|punct|space|upper|xdigit):\]/;
+  my $glob = '';
+  while ($pattern =~ m{\G(?: \\(.) | (\*+) | (\?)
+      | \[ ([!^]?+) ( \]?+ (?: $class | \\. | [^\]\\] )* ) \] | (.) )}gsx) {
+    my ( $escaped, $any, $one, $negated, $set, $literal ) = ( $1, $2, $3, $4, $5, $6 );
+    if (defined $set) {
+      $set =~ s{($class)|\\(.)|(-)|(.)}{ $1 // ( defined $2 ? quotemeta $2 : $3 // quotemeta $4 ) }gse;
+      $glob .= '['.( length $negated ? '^' : '' ).$set.']';
+      next;
+    }
+    $glob .= defined $any ? '.*' : defined $one ? '.' : quotemeta( $escaped // $literal );
+  }
+  return $glob;
+}
+
+sub recorded {
+  my ( $self ) = @_;
+
+  my $state = $self->_state // return;
+  return {
+    $state->%*,
+    file  => $self->_state_file,
+    bytes => -s $self->_state_path->stringify
+  };
+}
+
+sub forget {
+  my ( $self, $ref ) = @_;
+
+  croak __PACKAGE__.'->forget needs the name of a ref' unless defined $ref && !ref $ref;
+  # Nothing is created for a repository that has no state to take a ref from.
+  return unless $self->_state_path->is_file;
+  # Written by another account, the state and its lock would be files the
+  # poller cannot open any more.
+  croak __PACKAGE__.' the state in '.$self->_state_file.' belongs to another account'
+    unless -o $self->_state_path->stringify;
+  my $lock = $self->_lock;
+  my $state = $self->_state // return;
+  my $commit = delete $state->{tips}{$ref} // return;
+  $state->{absent} = [ grep { $_ ne $ref } $state->{absent}->@* ];
+  $self->store->write_json($self->_state_file, $state);
+  return $commit;
 }
 
 sub _state_file {
@@ -100,12 +190,32 @@ sub _state_path {
   return $self->store->root->child($self->_state_file);
 }
 
-sub _recorded {
+# One lock for each repository, beside its state and never removed. It is
+# held by whoever reads the state in order to write it.
+sub _lock {
+  my ( $self ) = @_;
+
+  my $state_path = $self->_state_path;
+  $state_path->parent->mkpath;
+  my $fh = $state_path->sibling($state_path->basename('.json').'.lock')->opena_raw;
+  flock($fh, LOCK_EX) or croak __PACKAGE__.' cannot lock the state: '.$!;
+  return $fh;
+}
+
+sub _state {
   my ( $self ) = @_;
 
   my $state_path = $self->_state_path;
   return unless $state_path->is_file;
-  return JSON::MaybeXS->new->decode($state_path->slurp_utf8);
+  my $state = JSON::MaybeXS->new->decode($state_path->slurp_utf8);
+  croak __PACKAGE__.' invalid state in '.$self->_state_file unless ref $state eq 'HASH';
+  # The form before the state said which refs the last poll lacked: the tips
+  # alone, all of them taken as seen. There a name has a commit for its
+  # value, so "tips" with an object is never a ref of that form.
+  return { tips => $state, absent => [] } unless ref $state->{tips} eq 'HASH';
+  my $absent = $state->{absent} // [];
+  croak __PACKAGE__.' invalid state in '.$self->_state_file unless ref $absent eq 'ARRAY';
+  return { tips => $state->{tips}, absent => $absent };
 }
 
 sub observe {
@@ -224,7 +334,18 @@ SimpiCI::Source::GitPoll - poll configured Git refs for SimpiCI
     }
   )->poll;
 
+  my $poller = SimpiCI::Source::GitPoll->new(store => $store, repository => $repository);
+  my $recorded = $poller->recorded;
+  my $commit = $poller->forget('refs/heads/gone');
+
 =head1 ATTRIBUTES
+
+=head2 runner
+
+What an accepted change is handed to: an object with a C<run> method that
+takes a L<SimpiCI::Event>, such as L<SimpiCI::Runner> or L<SimpiCI::Queue>.
+Only L</poll> needs it and croaks without one; the recorded state can be read
+and a ref forgotten by a poller that has none.
 
 =head2 ls_remote_timeout
 
@@ -304,32 +425,127 @@ repository, not the last observation. A ref that an observation lacks keeps
 its recorded tip and starts no run. Observed again, it is compared with that
 tip like any other ref: on the same commit it is no event, on another commit
 it is run. Only a ref that was never recorded is new, and with recorded state
-it is run whatever C<build_initial> says. Nothing takes a ref out of the
+it is run whatever C<build_initial> says. A poll takes no ref out of the
 state, be it deleted in the repository or no longer matched by the configured
-C<refs>: the state grows with every ref name the repository has had, and
-removing its file, see L</rejection>, forgets all of them at once.
+C<refs>: the state grows with every ref name the repository has had. A ref
+outside the configured C<refs> is simply not observed, so its tip waits: once
+the filter selects it again, it is run if it moved in between and not
+otherwise. L</forget> takes one ref out, and removing the file of the state
+all of them at once. See L</STATE>.
+
+From the reading of the state to its writing the poll holds the lock of the
+repository, the runs in between included. A second poll of the same
+repository, from another process on the same store, waits for the first and
+then compares with what that one recorded, so neither loses the other's tips
+and no change is run twice. In local mode this is the length of a build. The
+observation is made before the lock is asked for: a poll that had to wait
+works with what the remote showed before it waited.
+
+The state is written only if it differs from what is recorded, the first
+time also when it is empty.
 
 =head2 rejection
 
   my $reason = $poller->rejection($observed);
 
 Returns why an observation must not be polled, or nothing if it may. The one
-reason is an observation without refs while tips are recorded:
+reason is an observation without refs while refs are missed:
 
-  remote returned no refs, keeping recorded tips: 2 in state/repositories/<id>.json
+  remote returned no refs, configured refs seen at the last poll: 2
 
 Exit status 0 with nothing to show is what C<git ls-remote> gives for a
 reachable repository that has none of the configured refs, such as a mirror
-before its synchronisation. L</poll> would keep the recorded tips against it
-as against any observation that lacks refs; it is refused so that a caller
-can report a repository that shows none of them instead of taking it for one
-without changes. The number counts every recorded tip, those of refs that are
-gone or no longer configured included. Without recorded
-tips the same observation is acceptable: it is the baseline of a repository
-that has refs, but no matching one yet; L</observe> does not return it for a
-repository without any. The path is relative to the store root. Removing that
-file is how an operator accepts that the refs are gone for good: the
-repository then counts as never read, and its next observation is a first
-one. Reads the recorded tips and croaks if they cannot be decoded.
+before its synchronisation. The refusal protects nothing: L</poll> keeps the
+recorded tips against an empty observation as against any other that lacks
+refs. It is a signal, so that a caller can report a repository that lost all
+its refs at once instead of taking it for one without changes, and a refused
+observation changes nothing, so the reason is given again until a ref is
+back or the missed ones are forgotten.
+
+The number counts the refs that are missed: those the last accepted
+observation showed and that L</configured> still selects. A ref that was
+absent before, or that the filter no longer asks for, is not missed. If none
+is, the empty observation is what the filter gives and is acceptable. So is
+one without recorded state: it is the baseline of a repository that has
+refs, but no matching one yet; L</observe> does not return it for a
+repository without any. Reads the recorded state and croaks if it cannot be
+decoded.
+
+=head2 configured
+
+  my $selected = $poller->configured('refs/heads/main');
+
+True if the configured C<refs> select the name, by the rule C<git ls-remote>
+applies to its patterns: a pattern is held against the end of the name,
+beginning at its start or after a slash, C<*> and C<?> also match a slash,
+C<[...]> is a set of characters and a backslash takes the next character as
+it stands. C<refs/tags/*> therefore selects every tag, and C<main> selects
+C<refs/heads/main> as well as C<refs/tags/main>. Without configured refs
+every name is selected. Nothing is read for the answer.
+
+=head2 recorded
+
+  my $recorded = $poller->recorded;
+
+Returns what is recorded for the repository, or nothing if it was never
+polled: a hash reference with the C<tips> and the C<absent> list of
+L</STATE>, the path of its C<file> relative to the store root and the size of
+that file in C<bytes>. Taken without the lock, since the file is replaced as
+a whole. Croaks if the state cannot be decoded.
+
+=head2 forget
+
+  my $commit = $poller->forget($ref);
+
+Takes one ref out of the recorded state and returns the commit that was
+recorded for it, or nothing if the ref is not recorded or the repository has
+no state. The name is taken as it stands, not as a pattern. It holds the
+lock of L</poll> from reading the state to writing it and waits for a poll
+that is running, so the poll cannot write the ref back.
+
+A ref that is forgotten was never recorded as far as the next poll can tell.
+If the remote still shows it and C<refs> selects it, it is new and run,
+whatever C<build_initial> says: forgetting a ref does not make the repository
+one that was never read, not even when it was the last ref of the state. A
+ref the remote no longer has leaves the state and nothing else happens; if
+it ever returns, it is new.
+
+Croaks if the state file belongs to another account than the one that calls:
+the file it would write, and a lock it would create, could not be opened by
+the poller any more. A repository without state is left without one, and no
+directory is made for it.
+
+=head1 STATE
+
+The state of a repository is one JSON file below the store root,
+
+  state/repositories/<id>.json
+
+where C<id> is the SHA-256 of name, a NUL byte and clone URL of the
+repository. Another name or another clone URL is another repository with a
+state of its own.
+
+  {
+    "absent": ["refs/tags/v1"],
+    "tips": {
+      "refs/heads/main": "6d0c...",
+      "refs/tags/v1": "0b1e..."
+    }
+  }
+
+C<tips> holds the last tip of every ref that was recorded and not forgotten.
+C<absent> lists, in order, those of them that the last accepted observation
+did not show, because they are gone from the repository or because C<refs>
+did not ask for them. It is what L</rejection> counts by and what tells an
+operator which entries only take up room.
+
+A file that holds a flat hash of ref names to commits, the form before
+C<absent> existed, is read as tips that were all seen, and is replaced by
+the form above when the state next changes. Anything that is no JSON object
+croaks with C<invalid state> and the path.
+
+Beside it lies C<state/repositories/E<lt>idE<gt>.lock>, the empty file that
+L</poll> and L</forget> lock. It is created with the first poll and never
+removed; removing the state file leaves it, and it means nothing by itself.
 
 =cut

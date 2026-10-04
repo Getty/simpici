@@ -1,5 +1,7 @@
-# Dispatcher image: the poller (simpicid, dispatcher mode) and the restricted
-# SSH endpoint a worker connects to. No Docker CLI: a dispatcher never builds.
+# Dispatcher image: the poller (simpicid, dispatcher mode), the restricted
+# SSH endpoint a worker connects to (simpici-dispatch) and the operator
+# command for the recorded tips of the poller (simpici). No Docker CLI: a
+# dispatcher never builds.
 # Build from the repository root:
 #   docker build -f deploy/dispatcher/Containerfile -t simpici-dispatcher .
 FROM docker.io/library/perl:5.40-slim
@@ -21,7 +23,7 @@ COPY cpanfile ./
 RUN cpanm --notest --installdeps .
 COPY bin/ bin/
 COPY lib/ lib/
-RUN for program in simpicid simpici-dispatch; do \
+RUN for program in simpicid simpici-dispatch simpici; do \
       printf '#!/bin/sh\nexec /usr/local/bin/perl -I/opt/simpici/lib /opt/simpici/bin/%s "$@"\n' "$program" \
         > "/usr/local/bin/$program" && chmod 0755 "/usr/local/bin/$program"; \
     done

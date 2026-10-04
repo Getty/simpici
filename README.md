@@ -407,17 +407,25 @@ perl -Ilib bin/simpicid --config simpici.json
   from `A → B → A` can build the same commit again; the dispatcher queue
   provides durable repository/ref/commit deduplication. A ref that disappears
   keeps its tip: back on the same commit it builds nothing, on another commit
-  it is built. The state never drops a ref by itself.
+  it is built. So does a ref that `refs` no longer selects: when the filter
+  is widened again, it is built only if it has moved in between. The state
+  never drops a ref by itself and is written only when it changes;
+  [`simpici --state` and `--forget`](#recorded-tips) show it and take one ref
+  out.
+- Two `simpicid` on one `root`, such as a `--once` beside the running daemon,
+  do not lose each other's tips: the second waits while the first polls a
+  repository, a local build included, and builds nothing the first has built.
 - `--once` ends a polling cycle. Its exit code does not replace the build
   status in the run report.
 - A repository whose refs cannot be read, or are not read within
   `ls_remote_timeout`, is logged and skipped until the next cycle; the other
   repositories are still polled. `--once` then exits with 1.
-  The same holds for a repository that returns no refs while tips are recorded
-  for it: the recorded tips are kept. A repository that has no refs at all at
-  its first poll is skipped as well and gets no baseline, so `build_initial`
-  decides once its refs are there. A mirror that is only partly synchronised
-  is not recognised: let it finish before it is polled, see the
+  The same holds for a repository that returns no refs while configured refs
+  of its last poll are missed. That line is a signal only: the recorded tips
+  stay with or without it. A repository that has no refs at all at its first
+  poll is skipped as well and gets no baseline, so `build_initial` decides
+  once its refs are there. A mirror that is only partly synchronised is not
+  recognised: let it finish before it is polled, see the
   [operations guide](deploy/README.md#2-polling-on-one-machine).
 
 More templates: [local mode](etc/simpici.example.json) and
@@ -441,9 +449,40 @@ the ref must be canonical, such as `refs/heads/main`.
 The [operations guide](deploy/README.md) includes an example that generates
 an event file.
 
-The one-shot CLI is a trusted operator entry point. It does not automatically
+The one-shot CLI is a trusted operator entry point. A run does not
 read the daemon configuration or enforce its ref filters. It is not a
 replacement for the dispatcher's queue/retry semantics either.
+
+### Recorded tips
+
+The same command shows what `simpicid` has recorded for the repositories of a
+configuration, and takes one ref out of it. Neither reads a remote:
+
+```sh
+# One line per repository: recorded refs, how many the last poll did not see,
+# the state file and its size.
+perl -Ilib bin/simpici --config simpici.json --state
+
+# The refs of one repository and their tips.
+perl -Ilib bin/simpici --config simpici.json --state --repository acme/example
+
+# Forget one ref of that repository.
+perl -Ilib bin/simpici --config simpici.json --repository acme/example \
+  --forget refs/heads/old-topic
+```
+
+- A repository is named as in the configuration, a ref by its full name; no
+  file name has to be known.
+- A forgotten ref that the repository no longer has is simply gone from the
+  state. One it **still has is new at the next poll and is built**, whatever
+  `build_initial` says; in dispatcher mode not if the queue already has that
+  ref on that commit.
+- `--forget` exits with 0 when the ref was forgotten, 1 when it was not
+  recorded, 2 when the configuration has no such repository and 3 when the
+  configuration or the state cannot be used.
+
+Run it as the account of the daemon. Details are in the
+[operations guide](deploy/README.md#the-recorded-tips-of-a-repository).
 
 ### Separate build VM and reports
 

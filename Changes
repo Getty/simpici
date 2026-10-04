@@ -6,7 +6,7 @@
     newly appearing refs after initial polling. Shared durable run
     deduplication is provided by the dispatcher queue. A repository whose refs
     cannot be read (git ls-remote fails), or that returns none of the
-    configured refs while tips are recorded for it, does not stop simpicid: it
+    configured refs although its last poll saw some, does not stop simpicid: it
     logs one "not polled" line naming the repository, its clone URL and the
     reason, polls the remaining repositories, keeps
     the recorded tips and tries again in the next cycle, so refs that return
@@ -24,7 +24,19 @@
     into the recorded tips instead of replacing them: a ref that disappears
     while others stay keeps its last tip, so back on the same commit it
     starts no run, on another commit it does. The state of a repository never
-    drops a ref by itself; deleting its file forgets all of them.
+    drops a ref by itself; simpici --forget takes one out.
+  - The poller locks the recorded tips of a repository from reading to
+    writing, so a second simpicid on the same root loses no tip and builds
+    nothing twice, and writes them only when they change. The state also
+    lists the refs the last poll did not see. simpici --config FILE --state
+    shows what is recorded for each repository; simpici --config FILE
+    --repository NAME --forget REF takes one ref out (exit 0 forgotten, 1 not
+    recorded, 2 repository not configured). A forgotten ref the repository
+    still has is built as new at the next poll. The "not polled" line for a
+    repository that returns no refs reads "configured refs seen at the last
+    poll: N", counts only such refs and is a signal, no protection. A ref
+    outside the refs filter keeps its tip. The dispatcher image has a
+    simpici wrapper.
   - simpicid gives up on a repository whose refs are not read within
     ls_remote_timeout seconds (new top-level setting, default 60, shared by
     all queries made for one repository in a cycle), logs it as

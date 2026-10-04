@@ -47,7 +47,7 @@ the initial fetch is shallow.
 
 | Program | Key options |
 | --- | --- |
-| `simpici` | `--event FILE`, optional `--root DIR`, `--timeout SECONDS`, `--runner FILE`, `--help`, `--man` |
+| `simpici` | `--event FILE`, optional `--root DIR`, `--timeout SECONDS`, `--runner FILE`, `--help`, `--man`; for the recorded tips of the poller `--config FILE` with `--state`, optional `--repository NAME`, or with `--repository NAME --forget REF` |
 | `simpicid` | `--config FILE`, optional `--once`, `--runner FILE`, `--help`, `--man` |
 | `simpici-worker` | `--dispatcher USER@HOST`, `--root DIR`, optional `--once`, `--executor FILE` |
 | `simpici-dispatch` | `--config FILE`, `--worker NAME`; internal stdin JSON protocol |
@@ -58,10 +58,12 @@ do not currently implement a `--help`/`--man` interface. The worker uses the
 execution timeout from the dispatcher claim; its existing local `--timeout`
 option does not override that value.
 
-`simpici` does not read a daemon configuration or deduplicate through the
-queue. Two one-shot invocations produce two runs. The daemon and worker set
-a restrictive umask themselves; for the one-shot entry point, the example
-deliberately sets it beforehand.
+A run of `simpici` does not read a daemon configuration or deduplicate
+through the queue. Two one-shot invocations produce two runs. The daemon and
+worker set a restrictive umask themselves; for the one-shot entry point, the
+example deliberately sets it beforehand. With `--config`, `simpici` starts no
+run: it shows or corrects [the recorded tips](#the-recorded-tips-of-a-repository)
+of the poller and sets the umask of the daemon for what it writes.
 
 ## 2. Polling on one machine
 
@@ -157,23 +159,27 @@ that is valid today. Important details:
   helper that prompts on the terminal `simpicid` was started from is stopped
   and runs into the limit. Credentials have to be available without a prompt.
 - A repository that answers, but with none of the configured refs, is not
-  polled either while tips are recorded for it. `git ls-remote` reports this
-  as success with empty output; a mirror that was set up again does it before
-  its synchronisation. The line names the state it keeps instead of a git
-  error:
+  polled either while refs are missed that its last poll still saw.
+  `git ls-remote` reports this as success with empty output; a mirror that
+  was set up again does it before its synchronisation. The line says how many
+  refs are missed instead of a git error:
 
   ```text
-  simpicid: repository acme/example (https://github.com/acme/example.git) not polled: remote returned no refs, keeping recorded tips: 2 in state/repositories/<id>.json
+  simpicid: repository acme/example (https://github.com/acme/example.git) not polled: remote returned no refs, configured refs seen at the last poll: 2
   ```
 
-  The recorded tips stay as they are, so refs that return where they were
-  build nothing, including tags that were never built and would otherwise
-  receive what a `refs/tags/*` grant gives. The number counts every recorded
-  tip, those of refs that are gone or that `refs` no longer matches included.
-  The line and the exit status 1 of `--once` repeat as long as
-  the answer stays empty. If the refs are gone for good, remove the repository
-  from the configuration, or delete the named file below `root`: the
-  repository then counts as never read, and its next poll is a first one.
+  The line is a signal for the operator and protects nothing. The recorded
+  tips stay with or without it, as those of every ref that disappears do, so
+  refs that return where they were build nothing, including tags that were
+  never built and would otherwise receive what a `refs/tags/*` grant gives.
+  The number counts the refs that are missed: those the last poll saw and
+  `refs` still selects. A ref that was gone before, or that the filter no
+  longer asks for, is not counted, and an empty answer that misses no ref,
+  such as the one of a filter that was changed to refs the repository does
+  not have yet, is polled without a line. The line and the exit status 1 of
+  `--once` repeat as long as the answer stays empty. If the refs are gone for
+  good, [forget them](#the-recorded-tips-of-a-repository) or remove the
+  repository from the configuration.
 - A repository that has no refs at all is not polled either while nothing is
   recorded for it. This is a mirror between its creation and its first
   synchronisation, or a project nobody has pushed to:
@@ -217,14 +223,26 @@ that is valid today. Important details:
   built and these are not.
 
   The state of a repository therefore holds every ref name that was ever
-  observed for it, and it only grows: a ref that was deleted stays in it, and
-  so does one that `refs` no longer matches. A tag that is deleted and set
-  again on the same commit is not built a second time. No command forgets a
-  single ref. Deleting the file of the repository in `state/repositories/`
-  below `root` forgets all of them: the repository then counts as never read,
-  and `build_initial` decides whether its current tips are built. The name of
-  that file is derived from name and clone URL of the repository; the daemon
-  shows it only in the `keeping recorded tips` line above.
+  observed for it, and by polling it only grows: a ref that was deleted stays
+  in it, and so does one that `refs` no longer matches. A tag that is deleted
+  and set again on the same commit is not built a second time. Nothing
+  expires by itself, because a ref that returns has to find its tip;
+  [the recorded tips of a repository](#the-recorded-tips-of-a-repository)
+  describes how to see the state and how to take a ref out of it.
+- A ref that `refs` no longer selects keeps its tip like one that was
+  deleted. If the filter is narrowed and later widened again, a ref that
+  comes back into it is compared with the tip it had when it left: on the
+  same commit it builds nothing, and if it moved in between it is built once,
+  at the commit it is on then. What happened to it while it was outside the
+  filter is not built.
+- The state of a repository is written only when a poll changes it, and it
+  is locked from the moment it is read until it is written, the runs of that
+  poll included. A second `simpicid` on the same `root`, such as a
+  `simpicid --once` started by hand beside the service, therefore does not
+  take a tip away that the first has recorded and builds nothing the first
+  has built: it waits while the first polls that repository, in local mode
+  until its build has ended, and then compares with what the first recorded.
+  This makes a second poller harmless, not useful; run one per `root`.
 - Only reading the refs is tolerated. A run that cannot be started, an
   unwritable state root or queue, an unusable entry of `repositories`, a
   refused clone URL and an unusable grant end the daemon.
@@ -242,6 +260,172 @@ CICD_IMAGE_REPOSITORY=simpici-local CICD_PUBLISH_IMAGE=false \
 The publish variable is a convention used by these scripts, not authorization.
 In production services, credentials and network access must be restricted
 independently of such guards.
+
+### The recorded tips of a repository
+
+What the poller knows about a repository is one file below `root`:
+
+```text
+<root>/state/repositories/<id>.json
+<root>/state/repositories/<id>.lock
+```
+
+`<id>` is the SHA-256 of name, a NUL byte and clone URL of the repository, so
+nobody has to compute it: `simpici` finds the file from the configuration the
+daemon polls with. The `.lock` file beside it is empty. It is what a poll and
+`simpici --forget` lock; it appears with the first poll, is never removed and
+means nothing by itself.
+
+```json
+{
+   "absent" : [
+      "refs/heads/topic"
+   ],
+   "tips" : {
+      "refs/heads/main" : "6d0c…",
+      "refs/heads/topic" : "0b1e…"
+   }
+}
+```
+
+`tips` is the last tip of every ref the poller has recorded. `absent` lists
+those of them the last poll did not see: refs that are gone from the
+repository, and refs that `refs` no longer selects. A file written before
+this form existed is a flat object of ref names and commits; it is read as
+tips that were all seen and replaced when the state next changes. The file is
+written only when a poll changes something, so its modification time is the
+last change, not the last poll.
+
+#### Watching its size
+
+```sh
+simpici --config /etc/simpici/dispatcher.json --state
+```
+
+```text
+repository acme/example (https://github.com/acme/example.git): recorded refs: 214, absent at the last poll: 187, state/repositories/<id>.json, 19873 bytes
+repository acme/other (https://github.com/acme/other.git): nothing recorded
+```
+
+One line per configured repository, on standard output, with the exit status
+0: how many refs are recorded, how many of them the last poll did not see,
+the file relative to `root` and its size. Nothing is polled for it and no
+remote is read. `nothing recorded` is a repository that was never polled.
+
+A state only grows by polling. With one branch and a tag for each release
+that is a line per release. With a filter such as `refs/heads/*` over a
+repository of short-lived branches it is a line for every branch name there
+ever was, and `absent` grows with it: that number is the part of the state
+that is only kept in case the ref returns. **Nothing removes these entries
+automatically.** An entry is what keeps a ref that returns on its recorded
+commit from being built again, a deleted and restored release tag for
+instance, and the poller cannot tell a branch that is gone for good from one
+that is missing for a while. The cost of a large state is its file being read
+at every poll and written at every change, nothing else; forget refs when the
+numbers bother you, not on a schedule.
+
+Only configured repositories are shown. The state of a repository that left
+the configuration, or that is in it under another name or clone URL now,
+stays below `state/repositories/` as a file nothing reads any more; no
+command lists it. Compare the directory with the files `--state` names and
+delete what belongs to none, together with its `.lock`.
+
+`--repository` shows one repository with its refs, the absent ones marked:
+
+```sh
+simpici --config /etc/simpici/dispatcher.json --state --repository acme/example
+```
+
+```text
+repository acme/example (https://github.com/acme/example.git): recorded refs: 3, absent at the last poll: 1, state/repositories/<id>.json, 277 bytes
+  refs/heads/main 6d0c…
+  refs/heads/topic 0b1e… absent
+  refs/tags/v1 6d0c…
+```
+
+#### Forgetting one ref
+
+```sh
+simpici --config /etc/simpici/dispatcher.json --repository acme/example \
+  --forget refs/heads/topic
+```
+
+```text
+repository acme/example (https://github.com/acme/example.git): forgot refs/heads/topic, recorded at 0b1e…
+```
+
+The repository is named as the configuration names it and the ref by its full
+name, as `--state` prints it; a pattern is not expanded. To the next poll the
+ref was never recorded. What that means depends on the ref:
+
+- A ref that is `absent`, because the repository no longer has it or `refs`
+  no longer selects it, leaves the state and nothing is built. This is the
+  way to make a state smaller. Should the ref ever return, it is new and is
+  built.
+- A ref the repository still has and `refs` still selects is new at the next
+  poll and **is built**, on the commit it is on then, and receives what its
+  grants give: forgetting `refs/tags/v1` under a `refs/tags/*` grant builds
+  and publishes that tag again. `build_initial: false` does not prevent it.
+  That setting decides about a repository that was never read, and a
+  repository whose state has lost a ref, even its last one, is not that. In
+  local mode the commit is built even if it was built before; in dispatcher
+  mode the queue has every repository, ref and commit it accepted once and
+  starts no second run for one of them.
+
+| Exit status | Meaning | Output |
+| --- | --- | --- |
+| 0 | The ref was forgotten | The `forgot` line on standard output |
+| 1 | Nothing was forgotten: the ref is not recorded, or nothing is recorded for the repository | `simpici: repository acme/example (…): refs/heads/topic is not recorded` or `…: nothing is recorded` on standard error |
+| 2 | The configuration has no repository of that name | `simpici: repository acme/exmaple is not configured in /etc/simpici/dispatcher.json` on standard error |
+| 3 | The configuration cannot be read or is one `simpicid` refuses, or the state cannot be read, locked or written | `simpici:` and the reason on standard error |
+| 64 | The options are not a request | The usage on standard error |
+
+`--state` uses 0, 2, 3 and 64 in the same way. A name that the configuration
+has more than once, with different clone URLs, is several repositories with a
+state each: `--state` shows each, `--forget` forgets the ref in each that has
+it and exits with 0 if one had.
+
+Things to know before you use it:
+
+- **Run it as the account the daemon runs as**, for example
+  `sudo -u simpici simpici --config /etc/simpici/dispatcher.json …`. A state
+  file that belongs to another account is refused with the exit status 3 and
+  left alone: written by root, it and its lock would be files the daemon can
+  no longer open, and the daemon would end at its next poll.
+- A relative `root` in the configuration is resolved against the directory
+  the command is started in, as for the daemon. Start it where the daemon is
+  started, or use an absolute `root`.
+- The daemon does not have to be stopped. `--forget` takes the lock of the
+  repository and waits while the daemon polls it, in local mode until the
+  build of that repository has ended, without printing anything meanwhile.
+  `--state` never waits.
+- The configuration is checked as the daemon checks it at its start; one it
+  would refuse is refused here with the same words. Grants are not looked
+  at, and no secret file is read.
+- In the containers of section 5 the command runs in the poller service,
+  which has the state and the account:
+
+  ```sh
+  docker compose exec poller simpici \
+    --config /etc/simpici/dispatcher.json --state
+  docker compose exec poller simpici \
+    --config /etc/simpici/dispatcher.json \
+    --repository acme/example --forget refs/heads/topic
+  ```
+
+  `compose.yaml` starts that service as `990:990`, the account the state
+  directory was handed to, and `docker compose exec` runs a command as the
+  user of its service, so no `--user` is needed. The `ssh` service runs as
+  root: `--forget` there is refused with the exit status 3, unless it is
+  started with `docker compose exec --user 990:990 ssh simpici …`.
+
+To forget every ref of a repository at once, stop the daemon, delete the
+`.json` file that `--state` names and start the daemon again. The repository
+then counts as never read: its next poll is a first one and `build_initial`
+decides whether its tips are built. That is the one difference to forgetting
+its refs one by one, which leaves an empty state and builds whatever appears.
+The daemon is stopped for it because a poll that is running may write the
+file back.
 
 ## 3. Daemon in a container
 
@@ -952,13 +1136,19 @@ before that. Secret files are read at each claim, so a rotated value needs no
 restart. The poller also reads them once when it starts and exits if a grant
 is unusable; `docker compose logs poller` names it.
 
+What the poller has recorded for a repository is shown, and one ref of it
+forgotten, with `simpici` inside the poller service:
+`docker compose exec poller simpici --config /etc/simpici/dispatcher.json --state`.
+[The recorded tips of a repository](#the-recorded-tips-of-a-repository)
+describes the command and why it has to run in that service.
+
 A repository the poller cannot read, such as one whose organization does not
 exist on the forge yet, no longer restarts the container. The poller logs a
 `not polled` line for it in every cycle, keeps polling the others and picks
 the repository up once it is readable; section 2 describes the line and what
-is built then. A repository that exists but returns no refs while tips are
-recorded for it gets such a line as well, and so does one that has no refs at
-all yet. Look for these lines in
+is built then. A repository that exists but returns no refs while refs of
+its last poll are missed gets such a line as well, and so does one that has
+no refs at all yet. Look for these lines in
 `docker compose logs poller`: nothing else reports a repository that is never
 read.
 

@@ -114,7 +114,7 @@ my ( $died, $status, $warnings ) = once($config);
 is [ $died, $status, $warnings ], [ undef, 0, [] ], 'the baseline cycle is quiet';
 is runs_of('local'), ['owner/behind refs/heads/main'], 'and builds no tip of the mirror';
 my $baseline = $mirror_state->slurp_utf8;
-is [ sort keys $json->decode($baseline)->%* ], ['refs/heads/main', 'refs/tags/old'],
+is [ sort keys $json->decode($baseline)->{tips}->%* ], ['refs/heads/main', 'refs/tags/old'],
   'whose branch and tag are recorded';
 
 swap($mirror, "$mirror.synced");
@@ -125,8 +125,8 @@ is $died, undef, 'simpicid survives a mirror that answers without refs';
 is $status, 1, '--once reports it in its exit status';
 is scalar(@$warnings), 1, 'with one message';
 like $warnings->[0],
-  qr/\Asimpicid: repository owner\/mirror \(\Q$mirror\E\) not polled: remote returned no refs, keeping recorded tips: 2 in state\/repositories\/[0-9a-f]{64}\.json\n\z/,
-  'naming the repository, the reason and the state that is kept';
+  qr/\Asimpicid: repository owner\/mirror \(\Q$mirror\E\) not polled: remote returned no refs, configured refs seen at the last poll: 2\n\z/,
+  'naming the repository, the reason and how many refs are missed';
 unlike $warnings->[0], qr/ls-remote failed/, 'which is not a git failure';
 is $mirror_state->slurp_utf8, $baseline, 'the recorded tips stay as they were';
 is runs_of('local'), ['owner/behind refs/heads/main', 'owner/behind refs/heads/main'],
@@ -156,13 +156,14 @@ my $fresh_state = state_file('fresh.state', $fresh_repository);
 ( $died, $status, $warnings ) = once($fresh_config);
 is [ $died, $status, $warnings ], [ undef, 0, [] ],
   'a repository without a configured ref is quiet when nothing is recorded for it';
-is $json->decode($fresh_state->slurp_utf8), {}, 'and gets an empty baseline';
+is $json->decode($fresh_state->slurp_utf8), { tips => {}, absent => [] },
+  'and gets an empty baseline';
 swap($fresh, "$fresh.synced");
 empty_fixture('fresh');
 ( $died, $status, $warnings ) = once($fresh_config);
 is [ $died, $status, $warnings ], [ undef, 0, [] ],
   'which a repository that lost all its refs leaves alone';
-is $json->decode($fresh_state->slurp_utf8), {}, 'and empty';
+is $json->decode($fresh_state->slurp_utf8), { tips => {}, absent => [] }, 'and empty';
 # The documented rule for refs that appear after the first poll.
 commit($fresh, 'first');
 once($fresh_config);
@@ -194,15 +195,17 @@ my $tagged_state = state_file('library', $poller->repository);
 is $poller->rejection({}), undef, 'no refs are acceptable while nothing is recorded';
 is $poller->poll, [], 'the baseline of a tag pattern enqueues nothing';
 my $recorded = $tagged_state->slurp_utf8;
-is $poller->rejection($json->decode($recorded)), undef, 'an observation with refs is acceptable';
+is $poller->rejection($json->decode($recorded)->{tips}), undef,
+  'an observation with refs is acceptable';
 
 # The remote has refs, but none the configured pattern matches.
 git($tagged, 'tag', '-d', 'v1');
 is $poller->observe, {}, 'a pattern that matches nothing is observed as no refs';
 like $poller->rejection({}),
-  qr/\Aremote returned no refs, keeping recorded tips: 1 in state\/repositories\/[0-9a-f]{64}\.json\z/,
+  qr/\Aremote returned no refs, configured refs seen at the last poll: 1\z/,
   'which is refused against recorded tips';
-like dies { $poller->poll }, qr/SimpiCI::Source::GitPoll remote returned no refs, keeping recorded tips: 1 /,
+like dies { $poller->poll },
+  qr/SimpiCI::Source::GitPoll remote returned no refs, configured refs seen at the last poll: 1 /,
   'a poll that observes by itself refuses it';
 like dies { $poller->poll({}) }, qr/remote returned no refs/, 'and so does a poll that is handed it';
 is $tagged_state->slurp_utf8, $recorded, 'neither touches the recorded tips';

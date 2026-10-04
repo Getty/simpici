@@ -219,7 +219,7 @@ my ( $died, $status, $warnings ) = once($config);
 is [ $died, $status, $warnings ], [ undef, 0, [] ], 'the cycle that sees the refs is quiet';
 is runs_of('local'), ['owner/behind refs/heads/main'],
   'and builds neither the branch nor the old tag';
-is [ sort keys $json->decode($mirror_state->slurp_utf8)->%* ],
+is [ sort keys $json->decode($mirror_state->slurp_utf8)->{tips}->%* ],
   ['refs/heads/main', 'refs/tags/old'], 'they are the baseline';
 is queries(), [ $configured, $configured ], 'no repository is asked twice';
 
@@ -252,7 +252,8 @@ my $untagged_state = state_file('untagged.state', $untagged_repository);
 ( $died, $status, $warnings ) = once($untagged_config);
 is [ $died, $status, $warnings ], [ undef, 0, [] ],
   'a repository that has refs, but none of the configured ones, is quiet';
-is $json->decode($untagged_state->slurp_utf8), {}, 'and gets an empty baseline';
+is $json->decode($untagged_state->slurp_utf8), { tips => {}, absent => [] },
+  'and gets an empty baseline';
 is queries(), [ $configured, '' ], 'after one query without patterns';
 ( $died, $status, $warnings ) = once($untagged_config);
 is [ $died, $status, $warnings ], [ undef, 0, [] ], 'a second empty answer is quiet as well';
@@ -283,7 +284,8 @@ $kept_poller->poll;
 rename "$kept", "$kept.synced" or croak 'cannot move fixture: '.$!;
 empty_fixture('kept');
 queries();
-like dies { $kept_poller->poll }, qr/remote returned no refs, keeping recorded tips: 1 /,
+like dies { $kept_poller->poll },
+  qr/remote returned no refs, configured refs seen at the last poll: 1 /,
   'an empty answer against recorded tips is refused as before';
 is queries(), [ $configured ], 'with the one query';
 
@@ -329,6 +331,7 @@ ok !$direct_state->exists, 'and writes no baseline';
 is $direct->rejection({}), undef, 'the rejection stays a matter of the recorded tips';
 # Whether the repository has refs is known to the observation alone.
 is $direct->poll({}), [], 'an observation that is handed over is taken as observed';
-is $json->decode($direct_state->slurp_utf8), {}, 'and becomes the baseline';
+is $json->decode($direct_state->slurp_utf8), { tips => {}, absent => [] },
+  'and becomes the baseline';
 
 done_testing;

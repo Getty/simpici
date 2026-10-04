@@ -252,7 +252,7 @@ my $tips = SimpiCI::Source::GitPoll->new(
   store => $store, runner => $poller->runner, repository => repository($good))->observe;
 is [ keys %$tips ], ['refs/heads/main'], 'a readable remote yields its tips';
 is scalar($poller->poll($tips)->@*), 1, 'a poll works on the observation it is handed';
-is $json->decode(state_file('library', $poller->repository)->slurp_utf8), $tips,
+is $json->decode(state_file('library', $poller->repository)->slurp_utf8)->{tips}, $tips,
   'and records it without reading the remote again';
 
 done_testing;
