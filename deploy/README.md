@@ -123,7 +123,9 @@ that is valid today. Important details:
   credential helpers) are ended as one process group, with `TERM` and a
   second later `KILL`. The limit applies to each repository on its own: a
   cycle can take that long for every repository that hangs, before `interval`
-  starts. It is not `timeout`, which limits a run. A value that is not a
+  starts. The second query of a repository without a baseline, described
+  below, gets what the first left of the limit, not a limit of its own. It is
+  not `timeout`, which limits a run. A value that is not a
   positive integer ends the daemon at its first cycle instead of polling
   without a limit.
 - The query cannot ask for anything: its standard input is `/dev/null`, and a
@@ -131,8 +133,9 @@ that is valid today. Important details:
   and runs into the limit. Credentials have to be available without a prompt.
 - A repository that answers, but with none of the configured refs, is not
   polled either while tips are recorded for it. `git ls-remote` reports this
-  as success with empty output; a mirror does it before its synchronisation.
-  The line names the state it keeps instead of a git error:
+  as success with empty output; a mirror that was set up again does it before
+  its synchronisation. The line names the state it keeps instead of a git
+  error:
 
   ```text
   simpicid: repository acme/example (https://github.com/acme/example.git) not polled: remote returned no refs, keeping recorded tips: 2 in state/repositories/<id>.json
@@ -142,13 +145,44 @@ that is valid today. Important details:
   tags that were never built and would then receive what a `refs/tags/*`
   grant gives. The line and the exit status 1 of `--once` repeat as long as
   the answer stays empty. If the refs are gone for good, remove the repository
-  from the configuration, or delete the named file below `root` to accept the
-  empty state as the new baseline.
-- This guards recorded tips only. A repository that is empty at its **first**
-  poll gets an empty baseline without a log line, and every ref that appears
-  later is built, whatever `build_initial` says: add a mirror after its first
-  synchronisation. A repository that loses only some of its refs forgets
-  those and treats them as new if they come back.
+  from the configuration, or delete the named file below `root`: the
+  repository then counts as never read, and its next poll is a first one.
+- A repository that has no refs at all is not polled either while nothing is
+  recorded for it. This is a mirror between its creation and its first
+  synchronisation, or a project nobody has pushed to:
+
+  ```text
+  simpicid: repository acme/example (https://forge.example/acme/example.git) not polled: SimpiCI::Source::GitPoll repository has no refs yet at …
+  ```
+
+  It gets no baseline, so the poll that first sees refs is its initial one:
+  `build_initial: false` records them without a run, `true` builds them. With
+  an empty baseline every one of them would be built as new, whatever
+  `build_initial` says, and an old tag would receive what a `refs/tags/*`
+  grant gives. A new project whose first push is to be built needs
+  `build_initial: true`.
+
+  The filtered answer cannot tell this from a repository that only lacks the
+  configured refs, such as `refs/tags/*` before the first tag. For an empty
+  answer without a baseline, and only then, `simpicid` asks a second time
+  without the `refs` filter. A name below `refs/` in that answer, also outside
+  branches and tags, makes it a repository with refs: it gets its empty
+  baseline without a line, and the first matching ref is built. `HEAD` alone
+  does not count. A second query that fails or runs into the limit leaves the
+  repository unread for this cycle, like the first.
+
+  The line and the exit status 1 of `--once` repeat until the repository has
+  a ref, and there is no state file to delete: push to it, let the mirror
+  synchronise, or take the repository out of the configuration until then.
+- Only a repository without any ref is recognised, not one that is half
+  filled. A mirror that is polled during its first synchronisation, with the
+  branch there and the tags not yet, gets a baseline without the tags; they
+  are built as new when they arrive and receive what their grants give, since
+  a tag that arrives late looks like a tag that was just pushed. **Let a
+  mirror finish its first synchronisation before you add it to the
+  configuration or start the daemon.** The same holds afterwards: a repository
+  that loses only some of its refs forgets those and treats them as new if
+  they come back.
 - Only reading the refs is tolerated. A run that cannot be started, an
   unwritable state root or queue, a refused clone URL and an unusable grant
   end the daemon.
@@ -363,8 +397,9 @@ Queue deduplication is based on `repository NUL ref NUL commit` and applies
 across sources and mirrors. Polling observations, in contrast, are separate
 for each repository and clone URL. Use different logical repository names for
 independent mirror runs. A mirror that is reachable but temporarily without
-refs keeps its recorded tips; section 2 describes the log line and the limits
-of that rule.
+refs keeps its recorded tips, and one that has none at its first poll gets no
+baseline; section 2 describes the log lines and the limits of both rules. A
+mirror has to finish its first synchronisation before it is polled.
 
 Claims expire after the configured execution timeout plus 30 minutes for
 checkout and transfer. On the next claim, expired work is marked
@@ -449,7 +484,8 @@ exist on the forge yet, no longer restarts the container. The poller logs a
 `not polled` line for it in every cycle, keeps polling the others and picks
 the repository up once it is readable; section 2 describes the line and what
 is built then. A repository that exists but returns no refs while tips are
-recorded for it gets such a line as well. Look for these lines in
+recorded for it gets such a line as well, and so does one that has no refs at
+all yet. Look for these lines in
 `docker compose logs poller`: nothing else reports a repository that is never
 read.
 

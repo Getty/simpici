@@ -409,7 +409,11 @@ perl -Ilib bin/simpicid --config simpici.json
   `ls_remote_timeout`, is logged and skipped until the next cycle; the other
   repositories are still polled. `--once` then exits with 1.
   The same holds for a repository that returns no refs while tips are recorded
-  for it: the recorded tips are kept.
+  for it: the recorded tips are kept. A repository that has no refs at all at
+  its first poll is skipped as well and gets no baseline, so `build_initial`
+  decides once its refs are there. A mirror that is only partly synchronised
+  is not recognised: let it finish before it is polled, see the
+  [operations guide](deploy/README.md#2-polling-on-one-machine).
 
 More templates: [local mode](etc/simpici.example.json) and
 [dispatcher with secret grants](etc/simpici.dispatcher.example.json).

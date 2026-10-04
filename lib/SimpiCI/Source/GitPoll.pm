@@ -91,10 +91,16 @@ sub _state_file {
     .sha256_hex(join "\0", $repository->{name}, $repository->{clone_url}).'.json';
 }
 
+sub _state_path {
+  my ( $self ) = @_;
+
+  return $self->store->root->child($self->_state_file);
+}
+
 sub _recorded {
   my ( $self ) = @_;
 
-  my $state_path = $self->store->root->child($self->_state_file);
+  my $state_path = $self->_state_path;
   return unless $state_path->is_file;
   return JSON::MaybeXS->new->decode($state_path->slurp_utf8);
 }
@@ -102,10 +108,25 @@ sub _recorded {
 sub observe {
   my ( $self ) = @_;
 
-  my $repository = $self->repository;
+  my @patterns = $self->repository->{refs}->@*;
+  my $deadline = time + $self->ls_remote_timeout;
+  my $observed = $self->_ls_remote($deadline, @patterns);
+  # No match and no baseline: only the whole repository tells a filter that
+  # matches nothing from a repository that is not filled yet. Of the state
+  # only its existence is asked here; reading it is left to the rejection.
+  return $observed if $observed->%* || $self->_state_path->is_file;
+  my $whole = @patterns ? $self->_ls_remote($deadline) : $observed;
+  croak __PACKAGE__.' repository has no refs yet'
+    unless grep { m{\Arefs/} } keys $whole->%*;
+  return $observed;
+}
+
+sub _ls_remote {
+  my ( $self, $deadline, @patterns ) = @_;
+
   my $limit = $self->ls_remote_timeout;
-  my $result = $self->_capture($limit,
-    'git', 'ls-remote', '--', $repository->{clone_url}, $repository->{refs}->@*);
+  my $result = $self->_capture($deadline - time,
+    'git', 'ls-remote', '--', $self->repository->{clone_url}, @patterns);
   croak __PACKAGE__.' git ls-remote timed out after '.$limit.' s'
     .( length $result->{stderr} ? ': '.$result->{stderr} : '' ) if $result->{timed_out};
   croak __PACKAGE__.' git ls-remote failed: '.$result->{stderr} if $result->{status} != 0;
@@ -204,9 +225,10 @@ SimpiCI::Source::GitPoll - poll configured Git refs for SimpiCI
 
 =head2 ls_remote_timeout
 
-Seconds L</observe> waits for C<git ls-remote>, a positive integer, 60 by
-default. It has nothing to do with the timeout of a run, which belongs to the
-runner.
+Seconds L</observe> waits for the refs of the repository, a positive integer,
+60 by default. An observation that asks twice has them once, for both queries
+together. It has nothing to do with the timeout of a run, which belongs to
+the runner.
 
 =head1 METHODS
 
@@ -220,9 +242,32 @@ the remote cannot be read. A remote that answers without a usable ref yields
 an empty hash; whether that is acceptable is for L</rejection> to say. Nothing
 is persisted.
 
-The command gets L</ls_remote_timeout> seconds, connecting and authenticating
-included. After that its process group receives C<TERM> and, a second later,
-C<KILL>, and the call croaks with the limit and whatever git had printed:
+An empty answer does not say whether the configured refs are missing or the
+repository has not been filled yet, as a mirror before its first
+synchronisation. While no state is recorded for the repository, C<git
+ls-remote> is therefore run a second time, without patterns, and the call
+croaks if that shows no name below C<refs/> either:
+
+  repository has no refs yet
+
+Nothing is recorded for such a repository, so its refs are a first
+observation when they arrive and C<build_initial> decides about them. Saved
+as an empty baseline, the answer would make each of them new instead, tags
+that were never built included. C<HEAD> alone, a commit without a branch, is
+not a ref of the repository; any name below C<refs/> is one, also outside
+branches and tags. A repository that has refs, but none of the configured
+ones, yields the empty hash as before and gets its baseline.
+
+The second query is made only for an empty answer without recorded state. Of
+that state only the existence of its file is asked here, never its content.
+A repository without configured refs is asked for everything by the first
+query, which then answers both questions.
+
+The observation gets L</ls_remote_timeout> seconds, connecting and
+authenticating included, and its second query what the first has left of
+them. After that the process group of the command receives C<TERM> and, a
+second later, C<KILL>, and the call croaks with the limit and whatever git
+had printed:
 
   git ls-remote timed out after 60 s
 
@@ -245,6 +290,11 @@ the same point, with that reason. A caller that has to tell an unusable
 observation from a failing run observes first, asks for the rejection and
 only then passes the result.
 
+An observation that is handed over is taken as what L</observe> returned.
+Whether a repository has refs at all is known to L</observe> alone: an empty
+hash that did not come from it is saved as the baseline of a repository
+without recorded state, without a second look at the remote.
+
 =head2 rejection
 
   my $reason = $poller->rejection($observed);
@@ -260,8 +310,10 @@ reachable repository that has none of the configured refs, such as a mirror
 before its synchronisation. Saved, it would turn every recorded tip into a
 new one on its return, tags that were never built included. Without recorded
 tips the same observation is acceptable: it is the baseline of a repository
-that has no matching ref yet. The path is relative to the store root; removing
-that file is how an operator accepts that the refs are gone for good. Reads
-the recorded tips and croaks if they cannot be decoded.
+that has refs, but no matching one yet; L</observe> does not return it for a
+repository without any. The path is relative to the store root. Removing that
+file is how an operator accepts that the refs are gone for good: the
+repository then counts as never read, and its next observation is a first
+one. Reads the recorded tips and croaks if they cannot be decoded.
 
 =cut

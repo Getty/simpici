@@ -10,11 +10,20 @@
     logs one "not polled" line naming the repository, its clone URL and the
     reason, polls the remaining repositories, keeps
     the recorded tips and tries again in the next cycle, so refs that return
-    are not built as new. simpicid --once polls every repository and exits
+    are not built as new. A repository that has no refs at all at its first
+    poll, such as a mirror before its first synchronisation, is not polled
+    either ("repository has no refs yet"): it gets no baseline and is read
+    again in the next cycle, so its refs are a first observation when they
+    arrive and build_initial decides. A project created empty with
+    build_initial: false does not build its first push. A repository that has
+    refs, but none of the configured ones, gets an empty baseline. A mirror
+    that is only partly synchronised is not recognised and must be complete
+    before it is polled. simpicid --once polls every repository and exits
     with 1 if one was not polled. SimpiCI::Source::GitPoll offers observe and
     rejection; poll accepts an observation.
   - simpicid gives up on a repository whose refs are not read within
-    ls_remote_timeout seconds (new top-level setting, default 60), logs it as
+    ls_remote_timeout seconds (new top-level setting, default 60, shared by
+    all queries made for one repository in a cycle), logs it as
     not polled and goes on with the next one. git ls-remote runs in its own
     process group that is ended together with its helpers, and it does not
     answer prompts on the terminal. A remote that prints a lot on standard

@@ -143,18 +143,26 @@ once($config);
 is runs_of('local')->[-1], 'owner/mirror refs/heads/main', 'a new commit is built as before';
 is scalar(runs_of('local')->@*), 3, 'and nothing else';
 
-#### An empty first observation is still a first observation
+#### An empty baseline has nothing to keep
 
-my $fresh = empty_fixture('fresh');
+# A repository without refs at its first poll gets no baseline at all, see
+# t/44-poll-no-refs.t. This one has a branch then, only not a configured one,
+# and loses every ref afterwards.
+my $fresh = git_fixture('fresh');
+git($fresh, 'branch', '-m', 'develop');
 my $fresh_repository = repository($fresh);
 my $fresh_config = daemon_config('fresh.state', [ $fresh_repository ]);
+my $fresh_state = state_file('fresh.state', $fresh_repository);
 ( $died, $status, $warnings ) = once($fresh_config);
 is [ $died, $status, $warnings ], [ undef, 0, [] ],
-  'a repository without refs is quiet when nothing is recorded for it';
-is $json->decode(state_file('fresh.state', $fresh_repository)->slurp_utf8), {},
-  'and gets an empty baseline';
+  'a repository without a configured ref is quiet when nothing is recorded for it';
+is $json->decode($fresh_state->slurp_utf8), {}, 'and gets an empty baseline';
+swap($fresh, "$fresh.synced");
+empty_fixture('fresh');
 ( $died, $status, $warnings ) = once($fresh_config);
-is [ $died, $status, $warnings ], [ undef, 0, [] ], 'which a second empty answer leaves alone';
+is [ $died, $status, $warnings ], [ undef, 0, [] ],
+  'which a repository that lost all its refs leaves alone';
+is $json->decode($fresh_state->slurp_utf8), {}, 'and empty';
 # The documented rule for refs that appear after the first poll.
 commit($fresh, 'first');
 once($fresh_config);
