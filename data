@@ -1,0 +1,33 @@
+---
+claimed_at: 2026-10-04T04:50:25Z
+claimed_by: simpici
+class: standard
+completed: 2026-10-04T04:36:23Z
+created: 2026-10-04T03:04:59Z
+id: 20
+priority: high
+started: 2026-10-04T04:36:23Z
+status: done
+tags:
+- worker
+- secrets
+title: 'Worker: abgelehntes Event lässt Secret-Datei liegen und den Lauf ohne Log
+  hängen'
+updated: 2026-10-04T04:50:25Z
+---
+
+Befund aus k19 (2026-10-04, ausgeführt mit handgeschriebener queue/1.json): Der Worker claimt, schreibt secrets/N/publish.env und stirbt dann in SimpiCI::Event (Event abgelehnt). Die Secret-Datei bleibt auf dem Worker liegen; der Lauf bleibt 'running' bis zum Lease-Ende und wird beim nächsten Claim 'interrupted', ohne Log. Gilt für jedes Event, das der Worker ablehnt. Ziel: Event vor dem Schreiben der Secrets prüfen; jede Ablehnung nach dem Claim räumt die Secrets weg und meldet per finish einen Fehlschlag mit Grund (ohne Werte). Test: abgelehntes Event -> keine Secret-Datei, Lauf 'failed' mit Meldung.
+
+2026-10-04 04:24 Ursache am Code bestaetigt (worker, Stand 7a17d76): lib/SimpiCI/Worker.pm:49-55 schreibt secrets/RUN/{publish,deploy}.env direkt nach dem Claim; das Event wird erst in Zeile 65 gebaut (SimpiCI::Event->new als Argument von Runner->run). Kein eval um den Abschnitt 49-66: jeder croak dort (Event abgelehnt, mkpath/spew der Secrets, tmp-Verzeichnis, Runner->new mit falschem timeout, croak in Runner->run) verlaesst once ohne remove_tree (Zeile 79) und ohne finish. bin/simpici-worker:31 warnt nur. Der Dispatcher hoert nichts mehr, Queue.pm:70-73 macht den Lauf erst beim naechsten Claim nach Lease-Ende zu interrupted, ohne Log. finish (Queue.pm:89-111) nimmt schon heute state=failed plus Log an - kein neues Protokoll noetig. Plan: Test zuerst (t/71-worker-rejection.t), dann Event vor den Secrets bauen, Abschnitt in eval, Secrets in jedem Ausgang entfernen, Fehlschlag mit Grundzeile im Log per finish melden.
+
+2026-10-04 04:33 Rot gesehen (worker), Tests zuerst gegen den Stand 7a17d76: t/71-worker-rejection.t neu - 5 von 6 Subtests rot: once stirbt, secrets/N/publish.env liegt, Lauf bleibt running, kein Log; zusaetzlich legt run='../../escape' im Claim ein Verzeichnis ausserhalb von secrets/ an (Runner lehnt die Laufnummer erst danach ab). Nach der Umsetzung den Endstand der Tests noch einmal gegen die alte Worker.pm laufen lassen: t/71 6 von 7 rot, t/90 3 rot (Tests 7, 10, 11, danach Abbruch). Zwei spaeter ergaenzte Faelle (clone_url als Liste, payload als String) je einzeln rot gesehen, bevor die Formpruefung dazukam: die Grundzeile zitierte die URL samt Passwort (Type::Tiny bzw. 'Can't use string (...) as a HASH ref').
+
+Entscheidungen. 1) Kein neues Protokoll: finish nimmt state=failed + Log schon an; der Grund steht als letzte Zeile im Log ('SimpiCI::Worker run N aborted: GRUND'), dieselbe Zeile geht per warn auf stderr des Workers (sonst wuerde das Journal gegenueber heute stumm). 2) Exit-Code 125 fuer einen nicht (zu Ende) ausgefuehrten Claim, Methode aborted_exit_code - passt zu 124 (Timeout) und 126 (exec) des Runners, unterscheidbar von einem Job-Exit 1. 3) GRUND ist nur die erste Zeile des Fehlers (ein Backtrace darunter truege Argumente), zugewiesene Secret-Werte werden wie im restlichen Log geschwaerzt. 4) Reihenfolge: Event bauen -> Secrets schreiben -> Runner; alles in eval. Completion wird wie bisher zuerst gespeichert, dann secrets/N entfernt, dann gesendet; das Entfernen laeuft jetzt in jedem Ausgang, auch wenn die Completion nicht gespeichert werden konnte (dann croakt once wie frueher, der Lauf wird interrupted). 5) Formpruefung vor Event->new (Felder sind Strings, payload ist Objekt) und der Secrets (Objekt von Objekten), Meldung ohne Wert. 6) Laufnummer des Claims wird vor dem Pfadbau geprueft; eine ungueltige wird ohne finish abgelehnt (unter ihr laesst sich nichts melden, eine gespeicherte Completion wuerde den Worker blockieren).
+
+2026-10-04 04:34 Also found (nicht behoben, Board simpici). A) Worker schwaerzt in Hash-Reihenfolge, der Dispatcher laengste zuerst (Dispatcher.pm:174): ist ein Secret Anfang eines anderen (abc / abcdef), bleibt je nach Reihenfolge '[REDACTED]def' stehen und der Dispatcher findet den Rest nicht mehr. Belegt mit Wegwerf-Skript gegen SimpiCI::Worker->_redact (15 von 26 Schluesselpaaren); Verhalten wie vor k20 (Worker.pm:69-71 alt). B) Wird der Worker-Prozess waehrend eines Laufs getoetet, bleibt secrets/N liegen; beim Neustart raeumt nichts auf, auch der Retry einer gespeicherten Completion nicht (Worker.pm:41-46). Nur gelesen; deploy/README nennt das jetzt ausdruecklich. C) Der Dispatcher loescht claims/N.json (Secret-Werte im Klartext) nie, auch nicht nach angenommenem finish (Dispatcher.pm:163, 171-177). Nur gelesen. D) Eine vom Dispatcher abgelehnte Completion (expired/stale claim) bleibt als completion.json liegen und blockiert den Worker bei jedem Durchlauf, bis jemand eingreift - dokumentiertes Verhalten, betrifft jetzt auch gemeldete Abbrueche. Nur gelesen. E) Runner.pm:147 liefert bei einem Signal exit_code 0 mit state signalled. Nur gelesen. F) Ein Secret-Wert undef oder als Referenz innerhalb einer Phase wird nicht abgelehnt (Worker schreibt 'NAME=' bzw. 'NAME=HASH(...)'); der Dispatcher erzeugt so etwas nicht. Nur gelesen.
+
+2026-10-04 04:34 Done: SimpiCI::Worker baut das Event, bevor es secrets/N schreibt, und meldet jeden Abbruch nach dem Claim (abgelehntes Event, Claim falscher Form, Secret-Dateien/tmp nicht anlegbar, croak im Runner) per finish als failed mit Exit-Code 125; das Log endet mit 'SimpiCI::Worker run N aborted: GRUND' (erste Fehlerzeile, Secret-Werte geschwaerzt), dieselbe Zeile auf stderr. secrets/N wird in jedem Ausgang entfernt. Laufnummer des Claims wird vor dem Pfadbau geprueft. Kein neues Protokoll. Geaendert: lib/SimpiCI/Worker.pm, bin/simpici-worker (POD), deploy/README.md, docs/executor.md, t/90-transport.t; neu t/71-worker-rejection.t. Verifiziert: Tests zuerst rot (siehe Notiz), danach prove -lr t/ = 22 Dateien, 679 Tests, PASS; t/90 faehrt den k19-Fall durch beide Programme (bin/simpici-worker --once gegen bin/simpici-dispatch). Nicht geprueft: dzil test, echtes ssh, Container-Jobs im Abbruchfall, fehlschlagendes remove_tree. Baum uncommittet, Changes nicht angefasst. Vorschlag Commit: 'Report a claim the worker cannot execute as a failed run and remove its secret files (k20)'.
+
+2026-10-04 04:36 Committed as 0aa126d (0aa126d6b13a97d0c6a179270c19cdbe47798daa) on k20-k18, with Changes entry.
+
+2026-10-04 04:50 Follow-up committed as 25cd3ea (branch k20-k18, after k18): reason of an aborted run no longer carries file and line of the installation.
