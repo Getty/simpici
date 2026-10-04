@@ -101,4 +101,94 @@ be removed, the worker reports C<cannot remove secret files> with the path
 in every cycle and neither delivers a completion nor claims work until it is
 gone.
 
+=head2 What is kept below --root
+
+C<--root> is the state of this worker alone: the worker removes every log
+and every checkout it finds there. A root that holds the state of a
+dispatcher or of a C<simpicid>, which it knows by C<queue/>, C<claims/> or
+C<state/>, is refused in every cycle and nothing is removed from it:
+
+  simpici-worker: SimpiCI::Worker root is the state of a dispatcher or a daemon, it has queue/: /var/lib/simpici at ...
+
+A root that only C<simpici> made runs in has none of these and is not
+recognised; do not use one.
+
+A run leaves its report, C<public/runs/E<lt>runE<gt>.json>, and nothing
+else. Its log, C<public/runs/E<lt>runE<gt>.log>, is what the jobs printed,
+unredacted, and exists only while the run lasts: it is removed once the
+completion is saved, which carries the log with the secret values of the
+claim redacted. Its checkout C<work/E<lt>runE<gt>/>, the temporary files of
+the executor C<tmp/E<lt>runE<gt>/> with the output, the outputs and the
+artifacts of every job, and C<runs/E<lt>runE<gt>/> are removed at the same
+time, whichever way the run ended and before the completion is sent.
+
+What a job wrote as another account than the worker cannot always be
+removed by the worker. It then says so once,
+
+  SimpiCI::Worker cannot remove run files: tmp/7
+
+goes on with the next claim and tries again in every cycle. A log that
+cannot be removed stops it instead, like a secret file: it reports C<cannot
+remove the log of a run> with the path in every cycle until the log is gone.
+
+A worker that is killed during a run leaves all of this. The next start
+removes it before it connects to the dispatcher, with one line per entry,
+
+  SimpiCI::Worker removed orphaned run files: public/runs/7.log
+  SimpiCI::Worker removed orphaned run files: work/7
+
+and so does the first start of this version on the state of an earlier one,
+which kept every log and every checkout: copy what is to be kept before the
+upgrade. See L<SimpiCI::Worker/What a run leaves>.
+
+=head2 Ending the worker
+
+C<TERM>, C<INT> and C<HUP> end the worker, unless it was started to ignore
+one of them, as C<HUP> under C<nohup>. Between two runs they end it at
+once. From the claim to the end of a run the worker first ends the run, at
+whatever point it is: no further command of it is started, the process
+group of the executor is sent C<TERM>, and C<KILL> after five seconds if it
+is still there, and the containers of the run are killed and removed. The
+worker then
+saves the completion of the run, with the state C<signalled> and the exit
+code 128 plus the signal, removes the secret files and the files of the run
+and ends by the signal it received. Standard error gets
+
+  SimpiCI::Runner removed containers of run 7: 2
+  SimpiCI::Runner run 7 stopped by signal TERM
+
+the first line only if the executor did not get to remove them itself. The
+completion is not sent on the way out; the next start sends it. If the
+lease of the run is over by then, the dispatcher refuses it and it is kept
+under C<rejected/>.
+
+A worker that is killed with C<KILL> cannot do that. A process it started
+beside the executor notices that the worker is gone, ends the process group
+and removes the containers in the same way, within seconds. It holds the
+lock of the worker until it is done: a worker started in that time ends
+with C<simpici-worker already running> and has to be started again. The
+secret files, the log and the files of the run stay until that next start
+removes them.
+
+The containers are found by a label that only this C<--root> has: every
+container the executor starts carries
+C<simpici.instance=E<lt>instanceE<gt>> and
+C<simpici.run=E<lt>instanceE<gt>.E<lt>runE<gt>>, with the random value kept
+in the file C<instance> below C<--root>. No other container is ever killed
+or removed, not that of another worker on the same daemon either. While a
+run lasts, C<containers/E<lt>runE<gt>> names its label. A file that is
+still there at a start names a run whose containers nobody removed, for
+example because the worker was killed together with everything it had
+started. The worker then asks docker for the containers of its instance,
+removes them before anything else and says how many there were:
+
+  SimpiCI::Worker removed orphaned containers: 2
+
+If docker cannot be asked, it reports C<cannot remove orphaned containers>
+with the reason in every cycle and neither delivers a completion nor claims
+work until it could; the secret files, the log and the files of the run are
+removed all the same. A container that a job itself started through the
+Docker socket of a build or publish job carries no such label and is not
+found. See L<SimpiCI::Runner/Ending a run>.
+
 =cut

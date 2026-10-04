@@ -235,6 +235,20 @@ started, an unwritable queue or state root, an unusable entry of
 C<repositories>, a refused clone URL and an unusable grant still end the
 daemon.
 
+In local mode, C<TERM>, C<INT> and C<HUP> during a run end the run before
+they end the daemon: the process group of the executor is ended, the
+containers of the run are removed, and the run is reported as C<signalled>
+with the exit code 128 plus the signal. A daemon that is killed leaves a
+process that ends the run in the same way, without a report. See
+L<SimpiCI::Runner/Ending a run>. Between two runs, and in dispatcher mode,
+the signals end the daemon at once.
+
+The daemon does not look for containers at its start. If it is killed
+together with everything it started, the containers of its run stay; the
+file C<containers/E<lt>runE<gt>> below the state root names their label for
+C<docker ps --filter label=...>. Logs and checkouts of local runs are kept
+as they are and never removed.
+
 =head1 METHODS
 
 =head2 dispatcher_class

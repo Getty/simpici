@@ -203,9 +203,9 @@ subtest 'a completion that cannot be saved' => sub {
   my ( $response, $error, $warned ) = attempt();
   like $error, qr/SimpiCI::Worker cannot save the completion of run 4: /,
     'is an error of the worker';
-  like $worker_root->child('public/runs/4.log')->slurp_utf8, qr/PUBLISH_TOKEN=\Q$secret\E/,
-    'the job ran with its secret file';
+  ok -d $worker_root->child('public/runs/4.json'), 'the job ran with its secret file';
   ok !$worker_root->child('secrets/4')->exists, 'which is removed all the same';
+  ok !$worker_root->child('public/runs/4.log')->exists, 'and so is the log it printed the secret to';
   is report(4)->{state}, 'running', 'the run keeps its lease, as after any lost worker';
   $completion->remove_tree;
 };

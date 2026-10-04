@@ -13,8 +13,12 @@ EnvironmentFile=/etc/simpici/worker.env
 ExecStart=/usr/local/bin/simpici-worker --dispatcher ${SIMPICI_DISPATCHER} --root /var/lib/simpici-worker
 Restart=on-failure
 RestartSec=10
+# The worker ends its run itself on TERM: executor, job containers, secret
+# files. control-group lets what is left after a worker that died end the
+# run in its place; mixed would only ever send that KILL. See
+# deploy/README.md, "Stopping a worker, and a worker that is killed".
 KillMode=control-group
-TimeoutStopSec=30
+TimeoutStopSec=60
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

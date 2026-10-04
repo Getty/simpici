@@ -296,6 +296,14 @@ may require additional setup; this example is not a tested universal solution
 for those cases. For published images rather than a local build, the project
 references `raudssus/simpici` and `ghcr.io/getty/simpici` are available.
 
+`docker stop` sends the daemon `TERM`. During a run it first ends the run
+and removes its job containers from the host daemon, then exits with `143`;
+that takes well under the ten seconds `docker stop` waits. A daemon
+container that is killed, by `docker kill` or because the stop ran out of
+time, takes every process in it along, and the job containers of its run
+stay on the host. `<root>/containers/<run>` then holds their label, see
+[stopping a worker](#stopping-a-worker-and-a-worker-that-is-killed).
+
 ## 4. Dispatcher and isolated build VM
 
 ```text
@@ -426,7 +434,13 @@ does not automatically make this variable available during the build phase.
    Assign credentials through narrowly scoped dispatcher grants instead.
 6. Install the worker unit and, after checking the configuration, enable it
    with `systemctl enable --now simpici-worker`. The **entire worker state
-   remains private**, including its local `public` directory.
+   remains private**, including its local `public` directory, and belongs to
+   the worker alone: it removes the log and the checkout of every run. A
+   `--root` that is the state of a dispatcher or of a `simpicid`, which has a
+   `queue/`, `claims/` or `state/`, is refused and nothing is removed from
+   it; a directory that only `simpici` made runs in is not recognised, so do
+   not use one. Keep `KillMode` and `TimeoutStopSec` of the unit as they are,
+   see [stopping a worker](#stopping-a-worker-and-a-worker-that-is-killed).
 7. From the actual VM, verify network boundaries, allowed remotes, a test run
    and recovery after a reboot. Local stub tests do not replace these checks.
 
@@ -483,7 +497,10 @@ A run whose checkout or executor is ended by a signal, for example by the
 kernel's out-of-memory killer, is reported as `signalled`, with the signal
 and the exit code 128 plus its number: `137` for `SIGKILL`. The checkout
 stops at the command that was ended, and the executor is not started on a
-checkout that was cut off.
+checkout that was cut off. The containers such an executor could not remove
+are removed for it. A run that was ended because the worker itself was told
+to end is `signalled` too, with `143` for `SIGTERM`, see
+[stopping a worker](#stopping-a-worker-and-a-worker-that-is-killed).
 
 #### A completion that cannot be delivered
 
@@ -531,8 +548,8 @@ directory; nothing else reports it. For each file:
    worker, publish and deploy jobs included, although the dispatcher shows
    it as `interrupted` or not at all. `result` in the file is the state and
    exit code the worker would have reported, `log` the log it would have
-   delivered. The unredacted log is `<root>/public/runs/<run>.log` on the
-   worker.
+   delivered. There is no other copy of the log: the worker removed the
+   unredacted one when it saved the completion.
 2. **Do not expect the dispatcher to run it again.** The commit is
    deduplicated like any interrupted run.
 3. **Remove the file when you are done with it.** SimpiCI never reads,
@@ -561,15 +578,29 @@ keeping it.
 #### Where secret values are kept, and for how long
 
 Besides its file under `/etc/simpici/secrets`, a granted value is written to
-two places, and a job that prints it puts it in a third. All three are
-private state: nothing of the dispatcher's is below its `public/`, and the
-worker's `public/` directory is not to be served either.
+two places and is in the environment of the job containers, and a job that
+prints it or writes it to a file puts it in more. All of it is private
+state: nothing of the dispatcher's is below its `public/`, and the worker's
+`public/` directory is not to be served either. On the worker, nothing that
+can hold a value in the clear outlasts its run, with two exceptions that are
+described below: what a killed worker left, until it starts again, and files
+a job wrote as another account than the worker.
 
 | Where | Content | Removed |
 | --- | --- | --- |
 | Dispatcher, `<root>/claims/<run>.json` | The values handed out with the claim, in the clear, mode `0600`. Written for every claim, also one without secrets | When the completion of the run is accepted and recorded, and otherwise by the first request of any worker after the lease expired |
 | Worker, `<root>/secrets/<run>/publish.env` and `deploy.env` | One `NAME=VALUE` line per secret, passed to the jobs of that phase | When the run ends, whichever way; after a killed worker, by the next start |
-| Worker, `<root>/public/runs/<run>.log` | Whatever the jobs printed, unredacted | Never by SimpiCI |
+| Worker, the publish and deploy containers of the run | The values of their phase, as environment of the container | With the container: when its job ends, and within seconds when the run is ended by its timeout, by a signal for the worker or after a killed worker. What survives even that is removed by the next start |
+| Worker, `<root>/public/runs/<run>.log` | Whatever the jobs printed, unredacted | When the completion of the run is saved, before it is sent; after a killed worker, by the next start |
+| Worker, `<root>/tmp/<run>/` | The same output once more, per job, as `simpici.*/log.<phase>.<job>`; the output and artifact directories of the jobs | With the log. Files a job wrote as another account can stay, see below |
+| Worker, `<root>/work/<run>/` and `<root>/runs/<run>/` | The checkout, which jobs cannot write to, and the event of the run | With the log |
+| Worker, `<root>/completion.json` | The result, the claim token and the last 4 MiB of the log, with the values of the claim redacted | When the dispatcher accepted it. One it refuses for good is moved to `rejected/` |
+| Worker, `<root>/rejected/<run>.json` | The same, for a completion the dispatcher refused | Never by SimpiCI |
+| Worker, `<root>/public/runs/<run>.json` and `index.json` | The report: repository, ref, commit, state, exit code and times. No log and no value | Never by SimpiCI; a few hundred bytes per run |
+
+The rest of a worker's state root holds no output of a job: `instance`,
+`counter`, `counter.lock`, `worker.lock` and, while a run lasts,
+`containers/<run>` with the label of its containers.
 
 **Dispatcher.** The snapshot is what the log of the run is redacted from, so
 a value rotated during the run is still found. It is removed only after the
@@ -594,8 +625,9 @@ log is replaced by one line:
 SimpiCI::Dispatcher log of run 7 withheld: no secret snapshot to redact it with
 ```
 
-That happens only if the file was removed while the run was leased. The
-unredacted log is still on the worker.
+That happens only if the file was removed while the run was leased. The log
+is then lost: the worker removed its own copy when it saved the completion,
+and the completion is gone once the dispatcher has accepted it.
 
 **Worker.** A secret is written only as one `NAME=VALUE` line. A claim with a
 secret that is not one, such as an undefined or empty value, a structure
@@ -623,14 +655,206 @@ cycle and neither delivers a completion nor claims work until it is gone.
 Until the worker starts again, the files of the killed run stay where they
 are; a VM that is taken out of service has to be cleaned by hand.
 
+**What the jobs printed and wrote.** The log of a run is written as the jobs
+print, unredacted, because a value can only be redacted once it is whole.
+It is on the worker's disk for as long as the run lasts and no longer: the
+worker redacts it into the completion, saves that, and removes the log, the
+checkout, the executor's temporary files and the event of the run before it
+sends anything. That holds for every way a run ends, also for a claim the
+worker could not execute and for a completion it could not save. A
+completion that waits for a dispatcher that cannot be reached, for hours if
+need be, therefore waits without an unredacted log beside it.
+
+A worker that was killed during a run left all of that behind. The next
+start removes it before it connects to the dispatcher, with one journal line
+per entry:
+
+```text
+SimpiCI::Worker removed orphaned run files: public/runs/7.log
+SimpiCI::Worker removed orphaned run files: runs/7
+SimpiCI::Worker removed orphaned run files: tmp/7
+SimpiCI::Worker removed orphaned run files: work/7
+```
+
+Every cycle does the same, so the rule is simple: **when a worker asks for
+work, its state root holds no log and no files of any run.** A log that
+cannot be removed stops the worker like a secret file that cannot be: it
+logs `cannot remove the log of a run` with the path in every cycle and
+neither delivers nor claims until the log is gone.
+
+**Upgrading from a version that kept everything.** Earlier versions never
+removed a log, a checkout or a temporary file. The first start of this
+version removes all of them, every `public/runs/*.log` and everything below
+`work/`, `tmp/` and `runs/`, and names each in the journal. Copy what you
+want to keep before you upgrade, and expect that first start to take as
+long as removing the checkouts takes. The reports `public/runs/*.json` and
+`rejected/` are kept. A worker that finds `queue/`, `claims/` or `state/`
+under its `--root` removes nothing and logs in every cycle
+
+```text
+simpici-worker: SimpiCI::Worker root is the state of a dispatcher or a daemon, it has queue/: /var/lib/simpici at ...
+```
+
+because there the logs are the published ones.
+
+**Files of another account.** A job runs as whatever user its image and the
+container daemon give it, and what it writes to its output and artifact
+directories below `tmp/<run>/` belongs to that user on the host. The worker
+can remove a file in a directory it owns, but not what lies in a directory
+that another account created. That is the case
+
+- under rootful Docker, where a container's root is the host's root, for
+  every directory a job created;
+- under rootless Docker or Podman, for a directory created by a job that
+  does not run as the container's root, or that changed its owner.
+
+The worker removes what it can, which always includes the log, the checkout
+and the per-job output files the executor kept, says once per start what is
+left,
+
+```text
+SimpiCI::Worker cannot remove run files: tmp/7
+```
+
+goes on with the next claim and tries again in every cycle. What is left is
+only what the jobs themselves wrote: if a publish or deploy job wrote a
+secret value into its output directory, it is still there. Remove such
+directories with an account that may, for example from a timer:
+
+```sh
+# rootless Podman: as the worker account, inside its user namespace
+podman unshare find /var/lib/simpici-worker/tmp -mindepth 1 -maxdepth 1 -mmin +120 -exec rm -rf {} +
+# rootful Docker: as root
+find /var/lib/simpici-worker/tmp -mindepth 1 -maxdepth 1 -mmin +120 -exec rm -rf {} +
+```
+
+Choose the age well above `timeout`, so that no directory of a run in
+progress is removed; under rootless Docker, enter the user namespace of the
+daemon in the way your setup provides. Under rootless Docker or Podman with
+jobs that run as the container's root, which is what the official `debian`,
+`perl`, `node` and `python` images do, everything belongs to the worker
+account and nothing is left.
+
 A completion the dispatcher refused and the worker put aside under
 `rejected/` is no further place for a value in the clear: its log was
 redacted with the values of the claim before the completion was saved. It
 is kept until an operator removes it, see
 [a completion that cannot be delivered](#a-completion-that-cannot-be-delivered).
+A completion that a killed worker was still writing,
+`.completion.json.tmp.<pid>`, holds the same redacted log and is removed by
+the next start.
 
 Neither removal is a secure erase. The files are unlinked; what the file
 system, a snapshot or a backup keeps of them is outside SimpiCI.
+
+#### Stopping a worker, and a worker that is killed
+
+A job container is started by the Docker daemon. It is no process of the
+worker's unit, so nothing systemd does to the unit reaches it, and the
+executor runs in a process group of its own, so a signal for the worker
+alone does not reach it either. The worker therefore ends its run itself.
+
+**`systemctl stop`, `TERM`, `INT`, `HUP`.** Between two runs the worker ends
+at once. From the claim to the end of a run, at whatever point the signal
+arrives, it starts no further command of the run and
+
+1. sends `TERM` to the process group of the executor, which kills and
+   removes the containers it started, and `KILL` to what is left of the
+   group after five seconds;
+2. asks Docker for the containers with the label of the run and kills and
+   removes those that are still there;
+3. saves the completion of the run, with the state `signalled`, the exit
+   code `143` for `TERM` and the redacted log;
+4. removes the secret files, the log and the files of the run, and ends by
+   the signal it received.
+
+```text
+SimpiCI::Runner removed containers of run 7: 2
+SimpiCI::Runner run 7 stopped by signal TERM
+```
+
+The first line appears only if the executor left containers behind. The
+completion is not sent on the way out. The next start sends it, and the
+dispatcher records the run as `signalled`; if the worker stays down longer
+than the lease, `timeout` plus 30 minutes from the claim, the completion is
+refused as an `expired claim` and kept under `rejected/`. Publish and deploy
+jobs that had already run are not undone, and the run is not repeated.
+
+The [worker unit](simpici-worker.service) is written for this. Keep
+`KillMode=control-group`: systemd then sends `TERM` to the worker and to the
+executor at the same time, which is harmless, and gives what is left of the
+unit after a worker that died the same `TERM` and the same time. With
+`KillMode=mixed` the rest of the unit never gets a `TERM` from systemd, only
+its `KILL`, and that also ends the process that ends the run of a dead
+worker: the containers of that run then stay until the next start.
+`TimeoutStopSec=60` is the time the worker has for the four steps before
+systemd kills it; they take well under a second with a daemon that answers
+and are limited to 30 seconds per Docker command with one that does not.
+
+**`KILL`, the out-of-memory killer, a crash.** The worker can do nothing.
+A process it started beside the executor notices that the worker is gone and
+does steps 1 and 2 in its place, within seconds. It writes to the journal
+only if it could not remove the containers. Nobody saves a completion: the
+run keeps its lease and becomes `interrupted` when that expires. The secret
+files, the log and the files of the run stay until the worker starts again;
+the next start removes them and says so, as described above.
+
+That process holds the lock of the state root until it is done. A worker
+that is started in those seconds ends with `simpici-worker already running`;
+`Restart=on-failure` starts it again ten seconds later.
+
+**Everything of the unit killed at once.** If the worker, the executor and
+that process are killed together, as by `systemctl kill -s KILL` or by a
+stop that ran into `TimeoutStopSec`, the containers of the run are still
+there, and so is the file `<root>/containers/<run>`. At its next start the
+worker removes every container that carries the label of its instance,
+before it removes anything else or connects to the dispatcher:
+
+```text
+SimpiCI::Worker removed orphaned containers: 2
+```
+
+If Docker cannot be asked, or a container is still there afterwards, the
+worker logs `cannot remove orphaned containers` with the reason in every
+cycle and neither delivers a completion nor claims work until it could. The
+secret files, the log and the files of the run that was cut off do not wait
+for Docker: they are removed in the same cycle.
+
+**Which containers.** Every container the executor starts for a worker
+carries two labels: `simpici.instance=<instance>` and
+`simpici.run=<instance>.<run>`. The instance is 32 random hexadecimal digits
+in `<root>/instance`, written at the first start and never changed. The
+worker asks Docker for exactly one of these labels and passes on only what
+it gets back, so it never touches a container without the label: not that
+of another workload on the host, and not that of a second worker with
+another `--root` on the same daemon. A copy of a state root is the same
+instance; remove `instance` from a copy before a worker runs on it beside
+the original. To look for yourself, or to clean a VM whose worker will not
+start again:
+
+```sh
+docker ps -a --filter "label=simpici.instance=$(cat /var/lib/simpici-worker/instance)"
+```
+
+A worker that was started to ignore a signal, as `HUP` under `nohup`, is
+not ended by it, and neither is its run.
+
+**What this does not reach.** A container or a build that a job started
+itself through the Docker socket of a build or publish job carries no label
+and is not removed; neither is a process that left the process group of the
+executor. A VM that is switched off keeps what the worker would have
+removed at its next start. And an ended publish or deploy job may have done
+half of its work.
+
+The same rules hold for a local `simpicid` and for `simpici`, which use the
+same run supervisor: `TERM`, `INT` and `HUP` during a run end the run, its
+process group and its containers, the run is reported as `signalled`, and a
+killed daemon leaves a process that does it in its place. They differ in two
+points. They keep the logs, checkouts and temporary files of their runs, as
+before. And they do not look for orphaned containers at their start, because
+nothing keeps two of them from running on one state root: after everything
+of such a daemon was killed at once, remove the containers by hand with the
+label in `<root>/containers/<run>`.
 
 #### Redaction
 
@@ -642,8 +866,11 @@ two of them overlap in the output, nothing of either is left, and values that
 overlap or stand side by side become one marker. This does not detect
 arbitrary sensitive information, a value a job prints encoded or split, or
 intentional exfiltration. Final logs are limited to the last 4 MiB. Live logs
-and artifacts are not transferred. Workspaces, outputs and artifacts remain on
-the worker: configure disk limits and retention before continuous operation.
+and artifacts are not transferred, and the worker keeps neither: checkouts,
+outputs and artifacts are removed with the run, see
+[where secret values are kept](#where-secret-values-are-kept-and-for-how-long).
+A worker still needs disk for the largest run and for the images its daemon
+pulls; SimpiCI removes no image.
 
 ## 5. Dispatcher in containers
 

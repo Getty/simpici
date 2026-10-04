@@ -46,6 +46,7 @@ preceding checkout step in hosted operation.
 | `SIMPICI_PROVIDERS` | Whitespace-separated OCI images that generate jobs; an empty value means no providers. |
 | `SIMPICI_PLAN_ONLY` | Exactly `true` displays the job plan without starting job containers. Providers still run beforehand. |
 | `SIMPICI_SECRETS_DIR` | Private directory with optional `publish.env` and `deploy.env` files; passed only to the respective phase. |
+| `SIMPICI_INSTANCE` | Set by the native runner and the worker, not by hand: the 32 hexadecimal digits of their state root. With it, every container the executor starts is labelled, see [Containers of a run](#containers-of-a-run). Any other value ends the executor with exit `64`. |
 | `DOCKER_HOST` / Docker context | Selects the Docker endpoint. A Unix socket can be mounted in build/publish; a TCP/TLS daemon is not automatically passed through to job containers. |
 | `RUNNER_TEMP` / `TMPDIR` | Base directory for temporary data; keep outside the checkout. Defaults to `/tmp` if neither is set. |
 | `GITHUB_STEP_SUMMARY` | Optional hosted path for a Markdown summary. |
@@ -56,8 +57,12 @@ The temporary working tree defaults to
 separated there by phase and job. A custom temporary directory inside the
 checkout can cause copies and archives to include their own output.
 The temporary directory's parent must exist. At the end, the executor removes
-known containers, but does not automatically remove this temporary working tree;
-retention is an operational responsibility.
+known containers, but does not automatically remove this temporary working tree.
+It holds the output of every job as a file `log.<phase>.<job>`, unredacted,
+next to the output and artifact directories. The distributed worker gives each
+run a temporary directory of its own, `<root>/tmp/<run>`, and removes it when
+the run is over. With the native runner and in hosted operation, retention
+is an operational responsibility.
 
 The existing registry handoff also uses `CICD_REGISTRY`,
 `CICD_REGISTRY_USER`, `CICD_REGISTRY_PASSWORD` and `CICD_PUBLISH_IMAGE`.
@@ -69,7 +74,8 @@ secret as one `NAME=VALUE` line of `publish.env` or `deploy.env` and refuses,
 in the same way, a claim with a secret that is not one: an undefined or empty
 value, a structure, a value with a line end, a name other than `CICD_<NAME>`
 or `<NAME>_TOKEN`. The files of a worker that was killed during a run are
-removed when the worker starts again. See
+removed when the worker starts again, and so are the log, the checkout and
+the temporary files of that run. See
 [Operations](../deploy/README.md#where-secret-values-are-kept-and-for-how-long).
 
 ## Variables inside jobs
@@ -167,7 +173,61 @@ has finished; this is not an immediate fail-fast abort.
 
 Provider or host errors can produce other nonzero codes. The executor has no
 per-job timeout option of its own; the native runner limits the executor's
-runtime. TERM/INT are handled with an attempt to clean up known containers.
+runtime. On TERM and INT the executor kills and removes the containers it
+started, all of them in one `docker kill` and one `docker rm -f`, and exits
+with `143` or `130`. From the first signal on it ignores further ones. It
+knows a container from the `--cidfile` Docker writes for it, so a container
+that is still being created when the signal arrives can be missed; the
+native runner finds it by its label.
+
+## Containers of a run
+
+A job container is started by the Docker daemon, not by the executor: it is
+no member of the executor's process group, does not end when the executor
+does, and a service manager that ends the processes of a unit does not reach
+it. The native runner and the worker therefore mark the containers of a run
+and remove them themselves.
+
+- The executor is given `SIMPICI_INSTANCE`, the random value in the file
+  `instance` below the state root. Every provider and job container then
+  carries two labels: `simpici.instance=<instance>` and
+  `simpici.run=<instance>.<run>`. Hosted runs and direct invocations set no
+  instance and get no labels.
+- While the executor of a run is running, `<root>/containers/<run>` holds the
+  second label. The file is removed once the containers of the run are known
+  to be gone.
+- The runner ends the executor, with `TERM` to its process group and `KILL`
+  five seconds later for what is left of it, when the run is not over within
+  `timeout` and when the runner itself receives `TERM`, `INT` or `HUP`, at
+  whatever point of the run: a checkout that is told to end starts no
+  executor. A signal the runner was started to ignore, as `HUP` under
+  `nohup`, ends nothing. A run that was ended for a signal of the runner is
+  `signalled` with that signal, and its log ends with
+  `SimpiCI::Runner run <run> stopped by signal TERM`.
+- Only an executor that exits with `0` has seen every job it started end.
+  After every other end, a failure as well as a signal, the limit or a stop,
+  the runner lists the containers with the label of the run, kills and
+  removes them, and lists again. Whatever the executor left running in its
+  process group is killed when it is over, in any case.
+- A runner that is killed cannot do that. A process it starts in the group of
+  the executor notices that the runner is gone and does the same, without a
+  report: the run stays `running` in the native store, and in the dispatcher
+  until its lease expires.
+- What nobody removed, because runner and executor were killed together, is
+  removed by the **worker** at its next start: a file below `containers/`
+  makes it remove every container with the label of its instance before it
+  does anything else. `simpicid` and `simpici` do not: they take no lock on
+  their state root, so one of them cannot tell an orphaned container from
+  that of a run in progress. There the file stays and names the label to
+  look for: `docker ps -a --filter label="$(cat <root>/containers/<run>)"`.
+
+Only containers with exactly the label of the own instance are ever passed
+to `docker kill` or `docker rm`. A second worker on the same daemon has
+another state root and so another instance; a copied state root has the
+same one, so remove `instance` from a copy before it is used beside the
+original. A container that a job itself starts through the Docker socket of
+a build or publish job has no label and is not found, and neither is a
+process that leaves the process group of the executor.
 
 The native runner turns the way the executor ended into the state of the run:
 
@@ -233,8 +293,8 @@ the complete plan.
   of a failed job.
 - There is no built-in hosted artifact upload or artifact transfer back from
   the worker to the dispatcher.
-- Native local logs are written unfiltered. Removing private fields from a
-  report JSON is not log redaction.
+- Native local logs are written unfiltered and kept. Removing private fields
+  from a report JSON is not log redaction.
 - Worker and dispatcher redact assigned secret values with one function:
   every literal occurrence of every value of the claim, so that nothing is
   left where one value begins another or two of them overlap. This does not
@@ -243,8 +303,15 @@ the complete plan.
 - The dispatcher redacts from a snapshot of the claim's values that it keeps
   in `<root>/claims/<run>.json` until the completion is accepted, or until
   the first worker request after the lease expired. A completion it has no
-  snapshot for is recorded with its log withheld. The worker's own copy of a log, under its `<root>/public/runs/`,
-  is not redacted.
+  snapshot for is recorded with its log withheld.
+- The worker's own copy of a log, `<root>/public/runs/<run>.log`, is not
+  redacted and exists only while the run lasts. The worker removes it as
+  soon as the completion with the redacted log is saved, together with the
+  checkout `work/<run>`, the executor's `tmp/<run>` and `runs/<run>`; after
+  a killed worker, the next start does. Only the report
+  `public/runs/<run>.json` stays. Output and artifact files that a job wrote
+  as another account than the worker can outlast this, see
+  [Operations](../deploy/README.md#where-secret-values-are-kept-and-for-how-long).
 - A completion the dispatcher refuses for good, because the lease of the run
   is over, the run is claimed under another worker name or token, or the run
   is unknown, is not published anywhere. The worker keeps it as

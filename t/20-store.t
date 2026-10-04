@@ -30,4 +30,15 @@ like dies { $store->write_json('../escape.json', {}) },
   qr/path escapes root/,
   'refuses paths outside state root';
 
+# A name that is taken by a directory cannot be replaced by a file.
+$root->child('taken.json')->mkpath;
+like dies { $store->write_json('taken.json', { log => 'kept nowhere' }) },
+  qr/SimpiCI::Store->write_json cannot publish \Q$root\E\/taken\.json: /,
+  'reports what it cannot publish';
+is(
+  [ $root->children(qr/\.tmp\./) ],
+  [],
+  'and leaves no temporary file behind then either'
+);
+
 done_testing;

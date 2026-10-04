@@ -93,6 +93,18 @@
   - A checkout command or executor that a signal ended is reported as
     signalled with exit code 128 plus the signal; the checkout stops there
     and the executor does not start.
+  - The worker keeps no log and no files of a run: public/runs/<run>.log,
+    work/<run>, tmp/<run> and runs/<run> are removed once the completion with
+    the redacted log is saved, and what a killed worker or an earlier version
+    left is removed at the start of every cycle. The worker refuses the state
+    root of a dispatcher or daemon.
+  - simpici-worker, a local simpicid and simpici end a run on TERM, INT or
+    HUP, with the process group of the executor and its containers, and
+    report it as signalled; a killed supervisor leaves a process that does
+    the same. Job containers carry the labels simpici.instance and
+    simpici.run, only containers with the label of the own state root are
+    removed, and the worker removes orphaned ones at its start.
+    TimeoutStopSec of the worker unit is 60.
   - Discover repository jobs from their filenames, execute them in selected
     containers and enforce ordered phase barriers with bounded same-phase
     concurrency (default 2).

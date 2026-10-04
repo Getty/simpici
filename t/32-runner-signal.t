@@ -5,6 +5,8 @@ use Carp qw( croak );
 use File::Which qw( which );
 use JSON::MaybeXS;
 use Path::Tiny qw( path tempdir );
+use POSIX qw( WNOHANG );
+use Time::HiRes qw( sleep time );
 use SimpiCI::Event;
 use SimpiCI::Runner;
 use SimpiCI::Store;
@@ -37,6 +39,17 @@ step="$1"
 [[ "$step" == -C ]] && step="$3"
 printf '%s\n' "$step" >> "$TEST_STEPS"
 [[ "$step" == "${TEST_SIGNAL_STEP:-}" ]] && kill -s "$TEST_SIGNAL" $$
+if [[ "$step" == "${TEST_HANGING_STEP:-}" ]]; then
+  printf '%s\n' "$$" > "$TEST_HANGING"
+  exec sleep 60
+fi
+if [[ "$step" == "${TEST_STOP_AFTER_STEP:-}" ]]; then
+  # The step is made, and the supervisor is told to end as it is over.
+  "$TEST_REAL_GIT" "$@"
+  status=$?
+  kill -TERM "$TEST_SUPERVISOR"
+  exit "$status"
+fi
 exec "$TEST_REAL_GIT" "$@"
 SCRIPT
 $git->chmod(0755);
@@ -48,6 +61,10 @@ printf 'ran\n' >> "$TEST_STEPS"
 exit 0
 SCRIPT
 $executor->chmod(0755);
+# A run whose executor is ended asks docker for its containers. There are none.
+my $docker = $tools->child('bin/docker');
+$docker->spew_utf8("#!/bin/sh\nexit 0\n");
+$docker->chmod(0755);
 
 local $ENV{TEST_REAL_GIT} = which('git');
 local $ENV{PATH} = $git->parent.':'.$ENV{PATH};
@@ -113,6 +130,73 @@ subtest 'a command whose end cannot be read' => sub {
   like dies { $runner->run($event) }, qr/SimpiCI::Runner->_execute lost git: /,
     'is an error of the runner, not a result';
   is [ $steps->lines_utf8({ chomp => 1 }) ], ['init'], 'and nothing is started after it';
+};
+
+subtest 'a supervisor that is told to end during the checkout' => sub {
+  my $root = tempdir;
+  my $steps = $root->child('steps');
+  my $hanging = $root->child('hanging');
+  local $ENV{TEST_STEPS} = "$steps";
+  local $ENV{TEST_HANGING} = "$hanging";
+  local $ENV{TEST_HANGING_STEP} = 'fetch';
+  my $pid = fork;
+  croak 'fork failed' unless defined $pid;
+  unless ($pid) {
+    open STDERR, '>', $root->child('output')->stringify or POSIX::_exit(97);
+    eval { SimpiCI::Runner->new(store => SimpiCI::Store->new(root => $root->child('state')),
+      timeout => 30, runner_script => $executor)->run($event) };
+    POSIX::_exit(0);
+  }
+  my $deadline = time + 30;
+  sleep 0.05 until -s $hanging || time > $deadline;
+  ok -s $hanging, 'git fetch runs';
+  kill 'TERM', $pid;
+  my $ended;
+  sleep 0.05 until ( $ended = waitpid($pid, WNOHANG) ) != 0 || time > $deadline;
+  my $status = $?;
+  kill 'KILL', $pid unless $ended;
+  is [ $ended, $status & 127 ], [ $pid, 15 ], 'ends by the signal it was sent';
+  my $fetch = $hanging->slurp_utf8;
+  chomp $fetch;
+  ok !kill(0, $fetch), 'after it ended git fetch';
+  is [ $steps->lines_utf8({ chomp => 1 }) ], [qw( init remote fetch )],
+    'no later step and no executor was started';
+  my $published = $json->decode($root->child('state/public/runs/1.json')->slurp_utf8);
+  is [ $published->@{qw( state signal exit_code )} ], [ 'signalled', 15, 143 ],
+    'the run is published as signalled, with the signal of the supervisor';
+  ok !$root->child('state/containers')->exists, 'and no container was looked for';
+  like $root->child('output')->slurp_utf8, qr/\ASimpiCI::Runner run 1 stopped by signal TERM\n\z/,
+    'the supervisor says why the run ended';
+};
+
+subtest 'a supervisor that is told to end as a step of the checkout is over' => sub {
+  # The signal arrives while no command runs, or as one ends by itself.
+  for my $attempt (1 .. 5) {
+    my $root = tempdir;
+    my $steps = $root->child('steps');
+    local $ENV{TEST_STEPS} = "$steps";
+    local $ENV{TEST_STOP_AFTER_STEP} = 'fetch';
+    my $pid = fork;
+    croak 'fork failed' unless defined $pid;
+    unless ($pid) {
+      open STDERR, '>', $root->child('output')->stringify or POSIX::_exit(97);
+      $ENV{TEST_SUPERVISOR} = $$;
+      eval { SimpiCI::Runner->new(store => SimpiCI::Store->new(root => $root->child('state')),
+        timeout => 30, runner_script => $executor)->run($event) };
+      POSIX::_exit(0);
+    }
+    my $deadline = time + 30;
+    my $ended;
+    sleep 0.05 until ( $ended = waitpid($pid, WNOHANG) ) != 0 || time > $deadline;
+    my $status = $?;
+    kill 'KILL', $pid unless $ended;
+    is [ $ended, $status & 127 ], [ $pid, 15 ], 'ends by the signal it was sent';
+    is [ $steps->lines_utf8({ chomp => 1 }) ], [qw( init remote fetch )],
+      'no later step and no executor was started';
+    my $published = $json->decode($root->child('state/public/runs/1.json')->slurp_utf8);
+    is [ $published->@{qw( state signal exit_code )} ], [ 'signalled', 15, 143 ],
+      'the run is published as signalled';
+  }
 };
 
 done_testing;

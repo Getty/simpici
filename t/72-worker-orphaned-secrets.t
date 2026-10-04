@@ -172,6 +172,10 @@ set -euo pipefail
 exec "$TEST_PERL" -I"$TEST_LIB" "$TEST_DISPATCH" --config "$TEST_CONFIG" --worker test-vm
 SCRIPT
   $ssh->chmod(0755);
+  # Whatever ends the run asks docker for its containers. There are none.
+  my $docker = $root->child('bin/docker');
+  $docker->spew_utf8("#!/bin/sh\nexit 0\n");
+  $docker->chmod(0755);
   # Reports that the job runs with its secret file, then stays until killed.
   my $executor = $root->child('executor');
   $executor->spew_utf8(<<'SCRIPT');
@@ -210,10 +214,17 @@ SCRIPT
   waitpid($pid, 0);
   my $job = $running->slurp_utf8;
   chomp $job;
-  kill 'KILL', $job if $job =~ /\A[1-9][0-9]*\z/;
+  $deadline = time + 15;
+  sleep 0.05 while kill(0, $job) && time < $deadline;
+  ok !kill(0, $job), 'the job of the killed worker is ended without it';
   ok $secret_file->is_file, 'the killed worker leaves the secret file behind';
 
-  my $restarted = qx{"$program[0]" "$program[1]" "$program[2]" --dispatcher test-host --root "$worker_root" --executor "$executor" --once 2>&1};
+  # The store stays locked until the run of the killed worker is ended: a
+  # worker that is started before that says so and is started again.
+  my $restarted;
+  do {
+    $restarted = qx{"$program[0]" "$program[1]" "$program[2]" --dispatcher test-host --root "$worker_root" --executor "$executor" --once 2>&1};
+  } while $restarted =~ /simpici-worker already running/ && time < $deadline && sleep 0.2;
   is $? >> 8, 0, 'the worker starts again';
   ok !$worker_root->child('secrets/1')->exists, 'and removes the secret files of the killed run';
   is [ $worker_root->child('secrets')->children ], [], 'nothing is left below secrets/';

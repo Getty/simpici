@@ -86,6 +86,11 @@ printf '%s\n' "$CICD_RUN_NUMBER" >> "$CICD_WORKSPACE/../../executions"
 [[ -z "${TEST_SIGNAL:-}" ]] || kill -s "$TEST_SIGNAL" $$
 SCRIPT
 $executor->chmod(0755);
+# A run whose executor is ended asks docker for its containers. There are none.
+my $tools = tempdir;
+$tools->child('docker')->spew_utf8("#!/bin/sh\nexit 0\n");
+$tools->child('docker')->chmod(0755);
+local $ENV{PATH} = $tools.':'.$ENV{PATH};
 my $worker_store = SimpiCI::Store->new(root => $worker_root);
 my $worker = TestWorker->new(host => 'unused', store => $worker_store,
   runner => SimpiCI::Runner->new(store => $worker_store, runner_script => $executor),

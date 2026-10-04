@@ -63,6 +63,12 @@ detached, and invokes the shared phased container executor. This trusted
 one-shot entry point does not read daemon configuration or use queue
 deduplication; each invocation allocates a new run.
 
+C<TERM>, C<INT> and C<HUP> end the run before they end the command: the
+process group of the executor is ended, the containers of the run are
+removed, and the report is published as C<signalled> with the exit code 128
+plus the signal. No report is printed then; the command ends by the signal.
+See L<SimpiCI::Runner/Ending a run>.
+
 =head1 METHODS
 
 =head2 run

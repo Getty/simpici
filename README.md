@@ -467,6 +467,19 @@ A checkout command or an executor that a signal ended is `signalled` with the
 exit code 128 plus the signal, never a success, and the checkout does not go
 on after it.
 
+A run does not outlive whoever supervises it. `simpici-worker`, a local
+`simpicid` and `simpici` end a run that is in progress when they receive
+`TERM`, `INT` or `HUP`: the process group of the executor is ended, the job
+containers of the run are killed and removed, and the run is reported as
+`signalled`. If the supervisor is killed instead, a process it left beside
+the executor does the same within seconds. Job containers carry the labels
+`simpici.instance=<instance>` and `simpici.run=<instance>.<run>`, with a
+random instance per state root, and only containers with the own label are
+ever removed: not those of other workloads, and not those of a second worker
+on the same Docker daemon. A worker also removes, at its start, the
+containers of a run that was killed together with everything around it. See
+[stopping a worker](deploy/README.md#stopping-a-worker-and-a-worker-that-is-killed).
+
 Native runs write public report JSON and logs under `<root>/public/`.
 **Local logs are not automatically redacted.** Review their contents before
 publishing them. Only the worker/dispatcher path redacts secret values assigned
@@ -476,6 +489,15 @@ them overlap. The dispatcher keeps the values of a claim in the clear under
 first worker request after its lease expired. The worker keeps them under
 `<root>/secrets/` while the run lasts; a worker that was killed removes what
 it left there at its next start.
+
+The worker keeps no log either. What the jobs print is written unredacted
+while the run lasts, redacted into the completion when it is over, and then
+removed together with the checkout and the executor's temporary files, before
+the completion is sent. Of a run, the worker keeps its small report JSON, and
+a completion only until the dispatcher answered. What a killed worker left is
+removed at its next start, and the first start of this version removes the
+logs and checkouts that earlier versions kept. Output files that a job wrote
+as another account than the worker may have to be removed by an operator.
 [Where secret values are kept](deploy/README.md#where-secret-values-are-kept-and-for-how-long)
 has the details.
 

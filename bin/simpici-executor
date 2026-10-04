@@ -9,14 +9,25 @@ event_host="$action_temp/event.json"
 mkdir -p "$action_temp/outputs" "$action_temp/artifacts"
 cleanup_containers() {
   local cidfile
+  # A second signal must not end this half way: a supervisor that ends the
+  # run and the service manager that ends the supervisor may both send one.
+  trap '' TERM INT
+  local -a containers=()
   for cidfile in "$action_temp"/*.cid; do
-    [[ -f "$cidfile" ]] || continue
-    docker rm -f "$(cat "$cidfile")" >/dev/null 2>&1 || true
+    [[ -s "$cidfile" ]] || continue
+    containers+=( "$(cat "$cidfile")" )
   done
+  (( ${#containers[@]} > 0 )) || return 0
+  # Killed first, all of them at once: not every daemon kills at once what it
+  # is told to remove, and whoever ends this run waits only so long.
+  docker kill "${containers[@]}" >/dev/null 2>&1 || true
+  docker rm -f "${containers[@]}" >/dev/null 2>&1 || true
 }
 trap cleanup_containers EXIT
-trap 'exit 143' TERM
-trap 'exit 130' INT
+# Deaf to a second signal from here on: the first one already ends the run,
+# and another must not cut the removal of its containers short.
+trap 'trap "" TERM INT; exit 143' TERM
+trap 'trap "" TERM INT; exit 130' INT
 
 phase_rank() {
   case "$1" in
@@ -92,6 +103,26 @@ export CICD_BRANCH='' CICD_TAG=''
 [[ "$CICD_REF" == refs/heads/* ]] && CICD_BRANCH="${CICD_REF#refs/heads/}"
 [[ "$CICD_REF" == refs/tags/* ]] && CICD_TAG="${CICD_REF#refs/tags/}"
 
+# A supervisor that names its instance finds the containers of this run again
+# by these labels, also the ones this script did not get to remove. Both are
+# part of a docker command line, so nothing but an instance and a run number
+# is taken for one.
+labels=()
+if [[ -n "${SIMPICI_INSTANCE:-}" ]]; then
+  [[ "$SIMPICI_INSTANCE" =~ ^[0-9a-f]{32}$ ]] || {
+    printf 'SimpiCI: invalid SIMPICI_INSTANCE\n' >&2
+    exit 64
+  }
+  [[ "$CICD_RUN_NUMBER" =~ ^[0-9]+$ ]] || {
+    printf 'SimpiCI: SIMPICI_INSTANCE needs a decimal CICD_RUN_NUMBER\n' >&2
+    exit 64
+  }
+  labels=(
+    --label "simpici.instance=$SIMPICI_INSTANCE"
+    --label "simpici.run=$SIMPICI_INSTANCE.$CICD_RUN_NUMBER"
+  )
+fi
+
 json_string() {
   local value="$1"
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || return 65
@@ -134,7 +165,7 @@ for provider_image in "${providers[@]}"; do
   mkdir -p "$provider_out"
   printf 'SimpiCI: provider %s\n' "$provider_image" >&2
   docker run --rm --cidfile "$action_temp/provider.$provider_index.cid" \
-    --workdir /workspace \
+    ${labels[@]+"${labels[@]}"} --workdir /workspace \
     -v "$workspace:/workspace:ro" -v "$event_host:/run/simpici/event.json:ro" \
     -v "$provider_out:/cicd-out" \
     -e CICD_PROVIDER_OUT=/cicd-out \
@@ -225,7 +256,8 @@ run_job() {
   local logfile="$action_temp/log.$phase.$job"
   local start; start="$(date +%s)"
   local rc=0
-  docker run --rm --cidfile "$action_temp/$phase.$job.cid" --workdir /workspace "${mounts[@]}" "${environment[@]}" \
+  docker run --rm --cidfile "$action_temp/$phase.$job.cid" ${labels[@]+"${labels[@]}"} \
+    --workdir /workspace "${mounts[@]}" "${environment[@]}" \
     "$image" "/cicd/$basename" /run/simpici/event.json 2>&1 \
     | tee "$logfile" \
     | while IFS= read -r line; do printf '[%s/%s] %s\n' "$phase" "$job" "$line"; done || rc=$?
