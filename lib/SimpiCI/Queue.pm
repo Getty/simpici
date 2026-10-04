@@ -86,6 +86,17 @@ sub claim {
   return;
 }
 
+# Read without the lock: a queue file is replaced as a whole, and a run that
+# is not leased after it was claimed never becomes leased again.
+sub leased {
+  my ( $self, $run ) = @_;
+  croak __PACKAGE__.' invalid run' unless defined $run && $run =~ /\A[1-9][0-9]*\z/;
+  my $file = $self->store->root->child('queue', $run.'.json');
+  return 0 unless $file->is_file;
+  my $record = JSON::MaybeXS->new->decode($file->slurp_utf8);
+  return ($record->{state} // '') eq 'running' && ($record->{expires} // 0) > time ? 1 : 0;
+}
+
 sub finish {
   my ( $self, $worker, $run, $token, $result, $log ) = @_;
   croak __PACKAGE__.' invalid run' unless defined $run && $run =~ /\A[1-9][0-9]*\z/;
@@ -123,5 +134,46 @@ workers through a filesystem lock and atomically publishes a lease before
 returning it. C<finish> accepts only the owning worker and claim token.
 Expired leases become interrupted, never automatically replayed: a lost
 worker may already have performed an external publish operation.
+
+C<finish> publishes the log before it records the result. A dispatcher that
+dies in between leaves the run leased, and the worker's retry publishes the
+log again. Once the result is recorded, a repeated completion returns the
+report and publishes nothing: the log of a run is written by the completion
+that was accepted, never by a later one.
+
+=head1 METHODS
+
+=head2 run
+
+  my $report = $queue->run($event);
+
+Enqueues the event, or returns the report of the run that already has its
+deduplication key.
+
+=head2 claim
+
+  my $record = $queue->claim($worker);
+
+Marks the running records whose lease has expired as interrupted, then leases
+the oldest queued run to the worker and returns its record, or nothing if no
+run is queued.
+
+=head2 leased
+
+  my $open = $queue->leased($run);
+
+True while a completion of the run can still be accepted: it is claimed, has
+no result and its lease has not expired. False for a queued, completed,
+interrupted or unknown run, and for a run whose lease has expired but that no
+claim has marked as interrupted yet. A run that is not leased after it was
+claimed never becomes leased again. Croaks unless C<$run> is a run number.
+
+=head2 finish
+
+  my $report = $queue->finish($worker, $run, $token, $result, $log);
+
+Records the result of a leased run for the worker and token that claimed it
+and publishes its log. Croaks for another worker or token, for an unknown run
+and for an expired lease.
 
 =cut

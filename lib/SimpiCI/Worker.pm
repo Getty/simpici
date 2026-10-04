@@ -1,6 +1,7 @@
 package SimpiCI::Worker;
 
 use Moo;
+with 'SimpiCI::Role::Secrets';
 
 # ABSTRACT: Outbound-only worker with durable completion retry
 
@@ -37,6 +38,8 @@ sub _request {
 sub once {
   my ( $self ) = @_;
   $self->store->prepare;
+  # Before the dispatcher is asked for anything: it may be out of reach.
+  $self->remove_orphaned_secrets;
   my $pending = $self->store->root->child('completion.json');
   if ($pending->is_file) {
     my $request = JSON::MaybeXS->new->decode($pending->slurp_utf8);
@@ -55,12 +58,39 @@ sub once {
     or $error = $@ || 'unknown error';
   # No outcome of a claim leaves its secret files behind, not even a
   # completion that could not be saved.
-  $secrets_root->remove_tree;
+  $self->_remove_secrets($secrets_root);
   croak __PACKAGE__.' cannot save the completion of run '.$claim->{run}.': '.$error
     unless $request;
   my $response = $self->_request($request);
   $pending->remove;
   return $response;
+}
+
+# One claim is executed at a time, and once removes its secret files before
+# it returns: what lies below secrets/ when it begins was left by a worker
+# that did not live to do that.
+sub remove_orphaned_secrets {
+  my ( $self ) = @_;
+  my $directory = $self->store->root->child('secrets');
+  return 0 unless $directory->is_dir;
+  my @orphans = sort { $a->basename cmp $b->basename } $directory->children;
+  for my $orphan (@orphans) {
+    $self->_remove_secrets($orphan);
+    warn __PACKAGE__.' removed orphaned secret files: secrets/'.$orphan->basename."\n";
+  }
+  return scalar @orphans;
+}
+
+# A link is removed, not followed. Whatever cannot be removed is an error:
+# the worker does not go on with secret values it meant to delete.
+sub _remove_secrets {
+  my ( $self, $path ) = @_;
+  my $name = $path->stringify;
+  my $is_tree = !-l $name && -d $name;
+  # Why it failed is not told apart: that it is still there is the error.
+  eval { $is_tree ? $path->remove_tree({ safe => 0 }) : $path->remove; 1 };
+  croak __PACKAGE__.' cannot remove secret files: '.$name if -l $name || -e $name;
+  return;
 }
 
 # Runs the claim and saves what is to be reported about it. A claim that
@@ -75,13 +105,13 @@ sub _completion {
   my $log = $log_path->is_file ? $log_path->slurp_utf8 : '';
   unless ($report) {
     $report = { state => 'failed', exit_code => $self->aborted_exit_code };
-    my $reason = $self->_redact($claim, __PACKAGE__.' run '.$claim->{run}.' aborted: '
-      .$self->_abort_reason($error)."\n");
+    my $reason = $self->redact(__PACKAGE__.' run '.$claim->{run}.' aborted: '
+      .$self->_abort_reason($error)."\n", $claim->{secrets});
     warn $reason;
     $log .= "\n" if length $log && $log !~ /\n\z/;
     $log .= $reason;
   }
-  $log = substr($self->_redact($claim, $log), -4 * 1024 * 1024);
+  $log = substr($self->redact($log, $claim->{secrets}), -4 * 1024 * 1024);
   my $request = {
     operation => 'finish', run => $claim->{run}, token => $claim->{token},
     result => { state => $report->{state}, exit_code => $report->{exit_code} },
@@ -116,6 +146,16 @@ sub _run_claim {
   my $secrets = $claim->{secrets} // {};
   croak __PACKAGE__.' invalid secrets in claim'
     unless ref $secrets eq 'HASH' && !grep { ref $_ ne 'HASH' } values %$secrets;
+  # Each secret becomes one NAME=VALUE line of an environment file. Whatever
+  # is not one such line is refused before a file is written, and without
+  # being quoted: an undefined value would be written as an empty one, a
+  # reference as its address, a line end would begin a variable of its own.
+  for my $values (values %$secrets) {
+    croak __PACKAGE__.' invalid secret name in claim'
+      if grep { !$self->secret_name_valid($_) } keys %$values;
+    croak __PACKAGE__.' invalid secret value in claim'
+      if grep { !$self->secret_value_valid($_) } values %$values;
+  }
   $secrets_root->mkpath;
   for my $phase (qw( publish deploy )) {
     my $values = $secrets->{$phase} // {};
@@ -134,22 +174,6 @@ sub _run_claim {
 
 sub aborted_exit_code { 125 }
 
-# Every assigned value of the claim, whatever shape the claim arrived in.
-sub _secret_values {
-  my ( $self, $secrets ) = @_;
-  return ref $secrets eq 'HASH' ? map { $self->_secret_values($_) } values %$secrets
-    : defined $secrets && !ref $secrets && length $secrets ? $secrets
-    : ();
-}
-
-sub _redact {
-  my ( $self, $claim, $text ) = @_;
-  for my $value ($self->_secret_values($claim->{secrets})) {
-    $text =~ s/\Q$value\E/[REDACTED]/g;
-  }
-  return $text;
-}
-
 1;
 
 =head1 NAME
@@ -164,8 +188,10 @@ worker's entire state tree is private and must not be served by a web server.
 
 A claim that cannot be executed is completed as a failed run instead of being
 left to its lease: an event L<SimpiCI::Event> refuses, a claim of another
-shape than the dispatcher sends, secret files that cannot be written, a croak
-of L<SimpiCI::Runner>. The event is built before any secret file is written.
+shape than the dispatcher sends, a secret that is not one line of an
+environment file, secret files that cannot be written, a croak of
+L<SimpiCI::Runner>. The event is built and the secrets are checked before any
+secret file is written.
 The result is the state C<failed> with L</aborted_exit_code>. The log is what
 the run wrote up to then, followed by the line
 
@@ -179,10 +205,39 @@ message itself names stays in it, such as the file L<SimpiCI::Store> could not
 publish, and so does the C<source> of a refused event; the other fields of an
 event are refused without being quoted.
 
+=head2 Secrets of a claim
+
+The secrets of a claim are written to C<secrets/E<lt>runE<gt>/publish.env> and
+C<deploy.env> below the store root, one C<NAME=VALUE> line each, and the
+executor passes each file to the jobs of its phase. Every secret of the claim,
+in whichever phase, has to be such a line: a name
+L<SimpiCI::Role::Secrets/secret_name_valid> accepts and a value
+L<SimpiCI::Role::Secrets/secret_value_valid> accepts. An undefined value, a
+reference, an empty value and a value with a line end are refused, like a name
+that would not be a variable of its own. The reasons are
+
+  SimpiCI::Worker invalid secret name in claim
+  SimpiCI::Worker invalid secret value in claim
+
+and name neither the secret nor its value. The dispatcher grants nothing
+else, so such a claim comes from a dispatcher of another version or is not
+what the dispatcher sent.
+
+The log is redacted by L<SimpiCI::Role::Secrets/redact> with every value of
+the claim before it is saved as the completion; the dispatcher redacts it
+again with its own copy of them. The log of the run below C<public/runs> in
+the store of the worker is what the jobs wrote, unredacted.
+
 The secret files of a claim are removed whatever became of it, also when its
 completion could not be saved. C<once> croaks in that case, and for a claim
 whose run is not a run number, which is refused before anything is written
-and cannot be reported.
+and cannot be reported. It also croaks, with C<cannot remove secret files>
+and the path, if the files are still there after it removed them.
+
+A worker that is killed during a run removes nothing. Its secret files are
+removed by the next C<once> on the same store, see
+L</remove_orphaned_secrets>; the run itself keeps its lease at the dispatcher
+until that expires.
 
 =head1 METHODS
 
@@ -191,7 +246,27 @@ and cannot be reported.
   my $response = $worker->once;
 
 Returns the dispatcher's answer to the completion it delivered, or nothing if
-there was no work.
+there was no work. Before it asks the dispatcher for anything, it calls
+L</remove_orphaned_secrets>.
+
+Only one C<once> may run on a store at a time. C<simpici-worker> holds a lock
+on the store for that.
+
+=head2 remove_orphaned_secrets
+
+  my $removed = $worker->remove_orphaned_secrets;
+
+Removes every entry of C<secrets/> below the store root and returns how many
+there were. C<once> removes the secret files of its claim before it returns,
+so what is found there was left by a worker that ended during a run, and it
+must not be called while a claim is executed on the same store. Each entry is
+warned as
+
+  SimpiCI::Worker removed orphaned secret files: secrets/N
+
+without a value. A link is removed, not followed. Croaks if an entry cannot
+be removed; C<once> then asks for no work, so that the worker does not go on
+beside secret files it could not delete.
 
 =head2 aborted_exit_code
 

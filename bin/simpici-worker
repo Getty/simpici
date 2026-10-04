@@ -56,7 +56,24 @@ file and line where the error was raised:
 
   SimpiCI::Worker run 7 aborted: SimpiCI::Event ref must start with refs/
 
-No secret file is written for a refused event, and the secret files of a run
-are removed whichever way it ends.
+A claim whose secrets are not one C<NAME=VALUE> line each is refused the same
+way, with C<invalid secret name in claim> or C<invalid secret value in claim>
+as the reason: an undefined or empty value, a reference, a value with a line
+end, a name that is no C<CICD_E<lt>NAMEE<gt>> or C<E<lt>NAMEE<gt>_TOKEN>.
+
+No secret file is written for a refused claim, and the secret files of a run
+are removed whichever way it ends, as long as the worker lives to do it. A
+worker that is killed during a run leaves C<secrets/E<lt>runE<gt>/> below
+C<--root>. The next start removes everything below C<secrets/> before it
+connects to the dispatcher, and so does every later cycle, and writes one
+line per entry to standard error:
+
+  SimpiCI::Worker removed orphaned secret files: secrets/7
+
+The run of the killed worker is not repeated: it keeps its lease at the
+dispatcher until that expires and is then C<interrupted>. If an entry cannot
+be removed, the worker reports C<cannot remove secret files> with the path
+in every cycle and neither delivers a completion nor claims work until it is
+gone.
 
 =cut

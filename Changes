@@ -74,6 +74,15 @@
     secret file is written, and secrets/<run>/ is removed whichever way the
     run ends. A claim whose run is not a run number is refused before
     anything is written.
+  - Worker and dispatcher redact with one function (SimpiCI::Role::Secrets):
+    every occurrence of every assigned value, also where one value begins
+    another or two overlap; empty values do not break it. The dispatcher
+    removes claims/<run>.json once a completion is recorded, and each request
+    first removes the snapshots of expired and completed runs; a completion
+    without a snapshot is recorded with its log withheld. The worker removes
+    orphaned secrets/* before it contacts the dispatcher, and a claim whose
+    secret is not one NAME=VALUE line fails the run with exit 125.
+    SimpiCI::Queue gains leased.
   - Discover repository jobs from their filenames, execute them in selected
     containers and enforce ordered phase barriers with bounded same-phase
     concurrency (default 2).

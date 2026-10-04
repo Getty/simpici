@@ -340,8 +340,8 @@ VMware is one possible VM environment, not a SimpiCI protocol requirement.
    disables PTY, forwarding and user-rc execution. The key gets no normal
    shell. A test with `ssh -T simpici@dispatcher id` must not execute `id`;
    it should produce only a protocol error.
-5. Publish only the public report projection; never publish the queue,
-   internal events, credentials or workspaces.
+5. Publish only the public report projection; never publish the queue, the
+   secret snapshots in `claims/`, internal events, credentials or workspaces.
 
 ### Understand secret grants
 
@@ -472,24 +472,96 @@ The reason is the first line of the error, without the file and line of the
 worker installation where it was raised. Assigned secret values are redacted
 from it as from the rest of the log. A path the message itself names stays in
 it: a file the worker could not write under its `--root` is named with that
-directory. The event is checked before any secret file is written, and
-`secrets/<run>/` is removed after every outcome the worker process lives to
-see, also when the completion could not be saved. Only a claim whose run is
-not a run number is refused without a report: there is nothing to report it
-under.
+directory. The event and the secrets are checked before any secret file is
+written, and `secrets/<run>/` is removed after every outcome the worker
+process lives to see, also when the completion could not be saved. Only a
+claim whose run is not a run number is refused without a report: there is
+nothing to report it under.
 
 A rejected, expired completion is retained for investigation. Stop the worker
 and archive the file only after checking external effects, before accepting
-new work. A worker process that is killed during a run still leaves
-`secrets/<run>/` behind: inspect such orphaned secret directories and remove
-them selectively before putting the VM back into service.
+new work.
+
+#### Where secret values are kept, and for how long
+
+Besides its file under `/etc/simpici/secrets`, a granted value is written to
+two places, and a job that prints it puts it in a third. All three are
+private state: nothing of the dispatcher's is below its `public/`, and the
+worker's `public/` directory is not to be served either.
+
+| Where | Content | Removed |
+| --- | --- | --- |
+| Dispatcher, `<root>/claims/<run>.json` | The values handed out with the claim, in the clear, mode `0600`. Written for every claim, also one without secrets | When the completion of the run is accepted and recorded, and otherwise by the first request of any worker after the lease expired |
+| Worker, `<root>/secrets/<run>/publish.env` and `deploy.env` | One `NAME=VALUE` line per secret, passed to the jobs of that phase | When the run ends, whichever way; after a killed worker, by the next start |
+| Worker, `<root>/public/runs/<run>.log` | Whatever the jobs printed, unredacted | Never by SimpiCI |
+
+**Dispatcher.** The snapshot is what the log of the run is redacted from, so
+a value rotated during the run is still found. It is removed only after the
+redacted log is published and the result is recorded: a dispatcher that dies
+in between keeps the file, and the worker's retry is redacted from it. Every
+request to `simpici-dispatch`, a claim or a completion, first removes the
+snapshots of all runs that can no longer be completed: expired leases,
+completed runs, and the files a version before this one never removed, which
+go with the first request after the upgrade. A file in `claims/` that is not
+a snapshot is left alone.
+
+Expiry is noticed only when a worker connects. While none does, an expired
+run stays `running` and its snapshot stays in `claims/`; if the workers are
+gone for good, remove the files in `claims/` by hand. The directory needs no
+backup and should be left out of one.
+
+No log is published that the snapshot did not redact. If the snapshot of a
+run is missing when its completion arrives, the result is recorded and the
+log is replaced by one line:
+
+```text
+SimpiCI::Dispatcher log of run 7 withheld: no secret snapshot to redact it with
+```
+
+That happens only if the file was removed while the run was leased. The
+unredacted log is still on the worker.
+
+**Worker.** A secret is written only as one `NAME=VALUE` line. A claim with a
+secret that is not one, such as an undefined or empty value, a structure
+instead of a string, a value with a line end or a name that is not
+`CICD_<NAME>` or `<NAME>_TOKEN`, is not executed: the run becomes `failed`
+with exit code `125` and the reason `invalid secret name in claim` or
+`invalid secret value in claim`, which names neither the secret nor its
+value. The dispatcher grants nothing of that kind, so this points to a
+dispatcher of another version.
+
+A worker process that is killed during a run cannot remove `secrets/<run>/`.
+The worker removes everything below `secrets/` at its next start, before it
+connects to the dispatcher, and again at the beginning of every cycle, and
+says so in its journal:
+
+```text
+SimpiCI::Worker removed orphaned secret files: secrets/7
+```
+
+The line means that run 7 was cut off. It is not repeated: it keeps its
+lease until that expires and is then `interrupted`, so check its external
+effects as for any lost worker. If an entry below `secrets/` cannot be
+removed, the worker logs `cannot remove secret files` with the path in every
+cycle and neither delivers a completion nor claims work until it is gone.
+Until the worker starts again, the files of the killed run stay where they
+are; a VM that is taken out of service has to be cleaned by hand.
+
+Neither removal is a secure erase. The files are unlinked; what the file
+system, a snapshot or a backup keeps of them is outside SimpiCI.
+
+#### Redaction
 
 The dispatcher reconstructs public metadata; the worker and dispatcher redact
-assigned literal secret values from uploaded logs. This does not detect
-arbitrary sensitive information or prevent intentional exfiltration. Final
-logs are limited to the last 4 MiB. Live logs and artifacts are not
-transferred. Workspaces, outputs and artifacts remain on the worker: configure
-disk limits and retention before continuous operation.
+assigned literal secret values from uploaded logs, with the same function.
+Every occurrence of every value of the claim becomes `[REDACTED]`, in
+whichever order the values are taken: where one value begins another one, or
+two of them overlap in the output, nothing of either is left, and values that
+overlap or stand side by side become one marker. This does not detect
+arbitrary sensitive information, a value a job prints encoded or split, or
+intentional exfiltration. Final logs are limited to the last 4 MiB. Live logs
+and artifacts are not transferred. Workspaces, outputs and artifacts remain on
+the worker: configure disk limits and retention before continuous operation.
 
 ## 5. Dispatcher in containers
 

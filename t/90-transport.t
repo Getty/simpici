@@ -23,7 +23,8 @@ my $ssh = $root->child('bin/ssh');
 $ssh->spew_utf8(<<'SCRIPT');
 #!/usr/bin/env bash
 set -euo pipefail
-exec "$TEST_PERL" -I"$TEST_LIB" "$TEST_DISPATCH" --config "$TEST_CONFIG" --worker test-vm
+"$TEST_PERL" -I"$TEST_LIB" "$TEST_DISPATCH" --config "$TEST_CONFIG" --worker test-vm \
+  | tee -a "$TEST_RESPONSES"
 SCRIPT
 $ssh->chmod(0755);
 local $ENV{PATH} = $root->child('bin').':'.$ENV{PATH};
@@ -31,6 +32,9 @@ local $ENV{TEST_PERL} = $^X;
 local $ENV{TEST_LIB} = path('lib')->absolute->stringify;
 local $ENV{TEST_DISPATCH} = path('bin/simpici-dispatch')->absolute->stringify;
 local $ENV{TEST_CONFIG} = "$config";
+# What the dispatcher answered, in the order it was asked.
+my $responses = $root->child('responses');
+local $ENV{TEST_RESPONSES} = "$responses";
 my $worker_store = SimpiCI::Store->new(root => $root->child('worker'));
 my $worker = SimpiCI::Worker->new(host => 'test-host', store => $worker_store,
   runner => SimpiCI::Runner->new(store => $worker_store));
@@ -71,8 +75,10 @@ unlike $output, qr/transport-secret-value|hunter2-in-url/, 'without the secret o
 # Where the error was raised is no part of the reason: the log is public.
 my $private_path = qr/ line \d+|\.pm\b|\Q$ENV{TEST_LIB}\E|\Q@{[ $worker_store->root ]}\E/;
 unlike $output, $private_path, 'or a file of the installation or of the worker store';
-ok $store->root->child('claims/2.json')->slurp_utf8 =~ /transport-secret-value/,
+like $responses->slurp_utf8, qr/"PUBLISH_TOKEN":"transport-secret-value"/,
   'the claim did carry the secret';
+is [ $store->root->child('claims')->children ], [],
+  'and the dispatcher keeps no snapshot of it once the completion is accepted';
 ok !$worker_store->root->child('secrets')->exists, 'no secret file is written on the worker';
 my $report = JSON::MaybeXS->new->decode($store->root->child('public/runs/2.json')->slurp_utf8);
 is [ $report->@{qw( state exit_code )} ], [ 'failed', 125 ],

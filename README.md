@@ -455,7 +455,14 @@ guide, not in build scripts.
 Native runs write public report JSON and logs under `<root>/public/`.
 **Local logs are not automatically redacted.** Review their contents before
 publishing them. Only the worker/dispatcher path redacts secret values assigned
-by the dispatcher.
+by the dispatcher: every literal occurrence of every value, also where two of
+them overlap. The dispatcher keeps the values of a claim in the clear under
+`<root>/claims/` until the completion of the run is accepted, or until the
+first worker request after its lease expired. The worker keeps them under
+`<root>/secrets/` while the run lasts; a worker that was killed removes what
+it left there at its next start.
+[Where secret values are kept](deploy/README.md#where-secret-values-are-kept-and-for-how-long)
+has the details.
 
 The bundled `compose.yaml` is an **optional viewer example using a Podman
 socket**, not a complete daemon stack. It requires, among other things,

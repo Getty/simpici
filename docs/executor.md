@@ -64,8 +64,13 @@ The existing registry handoff also uses `CICD_REGISTRY`,
 Credentials belong at a trusted entry point, not in the candidate checkout.
 The distributed worker also materializes dispatcher grants as private secret
 files, only for an event it accepts and only until the run ends; a claim it
-cannot execute is reported as `failed` with exit code `125`. See
-[Operations](../deploy/README.md).
+cannot execute is reported as `failed` with exit code `125`. It writes each
+secret as one `NAME=VALUE` line of `publish.env` or `deploy.env` and refuses,
+in the same way, a claim with a secret that is not one: an undefined or empty
+value, a structure, a value with a line end, a name other than `CICD_<NAME>`
+or `<NAME>_TOKEN`. The files of a worker that was killed during a run are
+removed when the worker starts again. See
+[Operations](../deploy/README.md#where-secret-values-are-kept-and-for-how-long).
 
 ## Variables inside jobs
 
@@ -211,8 +216,16 @@ the complete plan.
   the worker to the dispatcher.
 - Native local logs are written unfiltered. Removing private fields from a
   report JSON is not log redaction.
-- Worker and dispatcher redact assigned secret values. This does not
-  automatically detect other sensitive content in logs.
+- Worker and dispatcher redact assigned secret values with one function:
+  every literal occurrence of every value of the claim, so that nothing is
+  left where one value begins another or two of them overlap. This does not
+  automatically detect other sensitive content in logs, or a value that a job
+  prints encoded or split.
+- The dispatcher redacts from a snapshot of the claim's values that it keeps
+  in `<root>/claims/<run>.json` until the completion is accepted, or until
+  the first worker request after the lease expired. A completion it has no
+  snapshot for is recorded with its log withheld. The worker's own copy of a log, under its `<root>/public/runs/`,
+  is not redacted.
 - The local native `<root>/public/runs/index.json` currently contains only the
   most recently written run. The queue projection, by contrast, maintains its run list.
 - Hosted step summaries are not the native static report store.

@@ -52,6 +52,16 @@ a message naming the repository, the secret and the reason, and takes no
 lease. A finish request is served without that check, so a completed run is
 not lost to a configuration error.
 
+A claim leaves the secret values it handed out in C<claims/E<lt>runE<gt>.json>
+below the state root, in the clear, so that the log of the run can be
+redacted when it arrives. The file is removed once the completion is accepted
+and recorded. Every request, whichever it is and before anything else, removes
+the files of runs whose lease expired or that are completed, including those
+an earlier version left behind. A lease that expires while no worker connects
+keeps its file until the next request. A completion that finds no file for a
+run it can still complete is recorded with a log of one line saying that the
+log was withheld, see L<SimpiCI::Dispatcher/Secret snapshot of a claim>.
+
 The clone URLs of the configuration are not checked here. This program reads
 no remote, and a queued event passed L<SimpiCI::Event> when it was enqueued;
 C<simpicid> refuses a clone URL with credentials before it polls.
