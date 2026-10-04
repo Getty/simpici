@@ -1,0 +1,17 @@
+# sshd for the dispatcher container: public keys only, one account, and
+# nothing beyond the forced command named in authorized_keys.
+Port 2222
+HostKey /etc/simpici/ssh/ssh_host_ed25519_key
+AuthorizedKeysFile /etc/simpici/ssh/authorized_keys
+AllowUsers simpici
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM no
+PermitTTY no
+PermitUserRC no
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+AllowAgentForwarding no
+X11Forwarding no

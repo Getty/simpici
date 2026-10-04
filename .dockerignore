@@ -1,0 +1,6 @@
+# Private runtime files of the container dispatcher never enter a build
+# context: they hold secrets and are unreadable for the invoking user.
+deploy/dispatcher/state
+deploy/dispatcher/secrets
+deploy/dispatcher/ssh
+deploy/dispatcher/dispatcher.json

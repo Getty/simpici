@@ -1,0 +1,1 @@
+restrict,command="/usr/local/bin/simpici-dispatch --config /etc/simpici/dispatcher.json --worker pikachu1" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReplaceWithTheWorkersPublicKey simpici-worker@pikachu1

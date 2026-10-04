@@ -32,3 +32,9 @@ config.yml
 # skilletor: committe Config + Ignore-Block
 !.claude/skilletor.json
 !.claude/.gitignore
+
+# Private runtime files of the container dispatcher
+/deploy/dispatcher/state/
+/deploy/dispatcher/secrets/
+/deploy/dispatcher/ssh/
+/deploy/dispatcher/dispatcher.json

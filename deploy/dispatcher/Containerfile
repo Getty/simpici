@@ -1,0 +1,30 @@
+# Dispatcher image: the poller (simpicid, dispatcher mode) and the restricted
+# SSH endpoint a worker connects to. No Docker CLI: a dispatcher never builds.
+# Build from the repository root:
+#   docker build -f deploy/dispatcher/Containerfile -t simpici-dispatcher .
+FROM docker.io/library/perl:5.40-slim
+
+# The account is created first, so 990 is taken before package scripts hand
+# out system IDs. sshd without PAM refuses a "!"-locked account even for keys;
+# "*" leaves the account open while no password can ever match.
+RUN groupadd --gid 990 simpici \
+  && useradd --uid 990 --gid 990 --home-dir /var/lib/simpici --no-create-home \
+       --shell /bin/sh simpici \
+  && usermod -p '*' simpici \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates git openssh-server \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /run/sshd
+
+WORKDIR /opt/simpici
+COPY cpanfile ./
+RUN cpanm --notest --installdeps .
+COPY bin/ bin/
+COPY lib/ lib/
+RUN for program in simpicid simpici-dispatch; do \
+      printf '#!/bin/sh\nexec /usr/local/bin/perl -I/opt/simpici/lib /opt/simpici/bin/%s "$@"\n' "$program" \
+        > "/usr/local/bin/$program" && chmod 0755 "/usr/local/bin/$program"; \
+    done
+COPY deploy/dispatcher/sshd_config /etc/ssh/sshd_config
+
+CMD ["simpicid", "--config", "/etc/simpici/dispatcher.json"]

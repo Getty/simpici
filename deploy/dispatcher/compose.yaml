@@ -1,0 +1,28 @@
+# Two processes from one image share the state volume: the poller fills the
+# queue, the sshd hands claims to workers through a forced command.
+services:
+  poller:
+    build:
+      context: ../..
+      dockerfile: deploy/dispatcher/Containerfile
+    image: simpici-dispatcher:local
+    user: "990:990"
+    volumes:
+      - ./state:/var/lib/simpici
+      - ./dispatcher.json:/etc/simpici/dispatcher.json:ro
+      - ./secrets:/etc/simpici/secrets:ro
+    restart: unless-stopped
+
+  # sshd starts as root and drops to the simpici account for each session.
+  ssh:
+    image: simpici-dispatcher:local
+    depends_on: [poller]
+    command: ["/usr/sbin/sshd", "-D", "-e"]
+    ports:
+      - "${SIMPICI_SSH_PORT:-2222}:2222"
+    volumes:
+      - ./state:/var/lib/simpici
+      - ./dispatcher.json:/etc/simpici/dispatcher.json:ro
+      - ./secrets:/etc/simpici/secrets:ro
+      - ./ssh:/etc/simpici/ssh:ro
+    restart: unless-stopped

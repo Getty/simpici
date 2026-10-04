@@ -40,3 +40,9 @@
     .claude with no duplicate agent configuration.
   - Publish the daemon image primarily as raudssus/simpici on Docker Hub and
     mirror it to GHCR with independent CI jobs.
+  - Run the dispatcher as a container (deploy/dispatcher): an image without
+    Docker CLI, a Compose file with the poller and a restricted sshd endpoint
+    (port 2222) for worker forced commands, plus example dispatcher
+    configuration and authorized_keys. A .dockerignore keeps its state,
+    secrets, SSH material and configuration out of every build context.
+    Documented as section 5 of deploy/README.md.

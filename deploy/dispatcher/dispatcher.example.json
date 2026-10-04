@@ -1,0 +1,40 @@
+{
+  "mode": "dispatcher",
+  "root": "/var/lib/simpici",
+  "interval": 60,
+  "timeout": 3600,
+  "repositories": [
+    {
+      "name": "langertha/langertha",
+      "clone_url": "https://src.ci/langertha/langertha.git",
+      "refs": ["refs/heads/main", "refs/tags/*"],
+      "build_initial": false,
+      "secrets": [
+        {
+          "name": "CICD_PACKAGE_TOKEN",
+          "file": "/etc/simpici/secrets/package-token",
+          "refs": ["refs/tags/*"],
+          "events": ["push"],
+          "sources": ["git-poll"],
+          "phases": ["publish"]
+        }
+      ]
+    },
+    {
+      "name": "langertha/raider",
+      "clone_url": "https://src.ci/langertha/raider.git",
+      "refs": ["refs/heads/main", "refs/tags/*"],
+      "build_initial": false,
+      "secrets": [
+        {
+          "name": "CICD_PACKAGE_TOKEN",
+          "file": "/etc/simpici/secrets/package-token",
+          "refs": ["refs/tags/*"],
+          "events": ["push"],
+          "sources": ["git-poll"],
+          "phases": ["publish"]
+        }
+      ]
+    }
+  ]
+}

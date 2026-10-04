@@ -283,7 +283,96 @@ logs are limited to the last 4 MiB. Live logs and artifacts are not
 transferred. Workspaces, outputs and artifacts remain on the worker: configure
 disk limits and retention before continuous operation.
 
-## 5. Forgejo Actions
+## 5. Dispatcher in containers
+
+[deploy/dispatcher/](dispatcher/) runs the dispatcher side of section 4
+without installing Perl or a systemd unit on the host: one image, two
+services. `poller` is `simpicid` in dispatcher mode; `ssh` is an sshd on port
+2222 whose only purpose is the workers' forced command. Neither service gets a
+Docker socket. The image is separate from the daemon image of section 3 and
+contains no Docker CLI.
+
+It replaces "Set up the dispatcher" only. Secret grants, the build VM and
+recovery work as described in section 4. The
+[example configuration](dispatcher/dispatcher.example.json) polls two
+repositories on `main` and on tags and grants one package token to the
+`publish` phase of tag runs; replace the repositories and grants with your own.
+
+```sh
+cd deploy/dispatcher
+install -d -m 0700 state secrets
+install -d -m 0755 ssh
+install -m 0600 dispatcher.example.json dispatcher.json
+install -m 0600 /dev/null secrets/package-token
+printf '%s\n' "$PACKAGE_TOKEN" > secrets/package-token
+ssh-keygen -q -t ed25519 -N '' -f ssh/ssh_host_ed25519_key
+install -m 0644 authorized_keys.example ssh/authorized_keys
+```
+
+Edit `dispatcher.json` now, and put each worker's public key and worker name
+into `ssh/authorized_keys`, one line per worker. Every line keeps `restrict`
+and the forced command: a key without them gets a shell in the container. Then
+hand the files over and start both services:
+
+```sh
+sudo chown -R 990:990 state secrets dispatcher.json
+sudo chown -R root:root ssh
+docker compose up -d --build
+```
+
+UID and GID 990 are the `simpici` account inside the image; on the host the
+number may belong to another account or to none. The `ssh` directory stays
+owned by root so the service account cannot rewrite its own key restrictions,
+and sshd refuses the keys if that directory or `authorized_keys` is writable
+by anyone else. These four private paths are ignored by Git and kept out of
+the image build context. Set `SIMPICI_SSH_PORT` if 2222 is taken on the host.
+
+The state directory holds the queue and the public report projection under
+`state/public/runs`; section 7 applies to publishing it. After changing
+`dispatcher.json`, run `docker compose restart`: the poller reads it only at
+startup, and a file replaced by an editor is not visible through the mount
+before that. Secret files are read at each claim.
+
+On the worker, name the port in `~/.ssh/config` of the account that runs
+`simpici-worker`, because `--dispatcher` takes no port:
+
+```text
+Host simpici-dispatcher
+  HostName dispatcher.example.org
+  Port 2222
+  User simpici
+  IdentityFile ~/.ssh/id_ed25519
+```
+
+Record the host key once. Compare the fingerprint with the output of
+`ssh-keygen -lf ssh/ssh_host_ed25519_key.pub` on the dispatcher before you
+trust it:
+
+```sh
+ssh-keyscan -p 2222 -t ed25519 dispatcher.example.org > dispatcher.hostkey
+ssh-keygen -lf dispatcher.hostkey
+cat dispatcher.hostkey >> ~/.ssh/known_hosts
+```
+
+Then start the worker with `--dispatcher simpici@simpici-dispatcher`. A worker
+key that tries anything but the protocol gets a protocol error:
+`ssh simpici@simpici-dispatcher id` must not print a `uid=` line.
+
+This setup has no health check, log rotation or backup of the state directory.
+The commands above assume a rootful Docker daemon and are not tested with one
+yet. With rootless Docker, Podman or user-namespace remapping, UID 990 inside
+the container is a different UID on the host: set the ownership inside the
+user namespace instead and leave `ssh` owned by the invoking user, who is root
+inside the container. Rootless Podman behind the Docker CLI is the tested
+variant; `docker compose` could not build the image there, so build it first:
+
+```sh
+podman build -f Containerfile -t simpici-dispatcher:local ../..
+podman unshare chown -R 990:990 state secrets dispatcher.json
+docker compose up -d --no-build
+```
+
+## 6. Forgejo Actions
 
 For a **target repository other than SimpiCI itself**, `uses: ./action` is
 correct only if you actually include the action there. Otherwise, use an
@@ -321,7 +410,7 @@ SimpiCI-specific jobs. It is not a deployment quickstart to copy without
 review. The generic Forgejo integration shown here has not been verified
 live against a real runner.
 
-## 6. Reports and viewer
+## 7. Reports and viewer
 
 Only `<root>/public/runs/` is intended as the report projection. The viewer
 file lives separately at `public/index.html` in the repository. Local native
