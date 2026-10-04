@@ -153,18 +153,19 @@ is [ map { $_->{repository} } runs_of('local')->@* ], ['owner/good', 'owner/good
 like $died, qr/\Q$runner_script\E/, 'a run that cannot start still ends the daemon';
 is $warnings, [], 'and is not reported as an unread repository';
 
-#### Credentials in a clone URL
+#### An HTTPS clone URL
 
 {
   # No network: git refuses the transport before it connects.
   local $ENV{GIT_ALLOW_PROTOCOL} = 'file';
-  ( $died, $status, $warnings ) = once(daemon_config('credentials', [
-    repository('https://user:s3cr3t@forge.invalid/owner/private.git') ]));
+  ( $died, $status, $warnings ) = once(daemon_config('https', [
+    repository('https://forge.invalid/owner/private.git') ]));
   is $status, 1, 'an unreadable HTTPS repository is reported';
   like $warnings->[0], qr/\(https:\/\/forge\.invalid\/owner\/private\.git\)/,
     'with its clone URL';
-  unlike $warnings->[0], qr/s3cr3t/, 'but without the credentials in it';
 }
+# The daemon refuses credentials in a clone URL before it polls, see
+# t/45-config-clone-url.t. The line itself still leaves them out.
 is(SimpiCI::App::Eventd->unread_message(
     repository('https://user:s3cr3t@forge.invalid/owner/private.git'),
     "fatal: unable to access 'https://user:s3cr3t\@forge.invalid/owner/private.git/':\n refused\n"),

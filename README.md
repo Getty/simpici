@@ -393,6 +393,10 @@ perl -Ilib bin/simpicid --config simpici.json
   building it.
 - `refs` is the **polling filter**, not global authorization for other entry
   points such as the one-shot CLI.
+- `clone_url` must not contain credentials: with `https://user:token@…`,
+  `simpicid` exits at start and names the repository. Give them to git through
+  a credential helper of the account that runs it; see the
+  [operations guide](deploy/README.md#2-polling-on-one-machine).
 - `timeout` limits the native executor's runtime.
 - `ls_remote_timeout` is a separate, optional limit for reading the refs of
   one repository; it defaults to 60 seconds.

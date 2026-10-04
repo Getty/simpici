@@ -5,17 +5,21 @@ use warnings;
 
 # ABSTRACT: Implementation of the simpicid polling daemon
 
+use Carp qw( croak );
 use Getopt::Long qw( GetOptionsFromArray );
 use JSON::MaybeXS;
 use Path::Tiny qw( path );
 use Pod::Usage qw( pod2usage );
 use SimpiCI::Dispatcher;
+use SimpiCI::Event;
 use SimpiCI::Runner;
 use SimpiCI::Queue;
 use SimpiCI::Source::GitPoll;
 use SimpiCI::Store;
 
 sub dispatcher_class { 'SimpiCI::Dispatcher' }
+
+sub event_class { 'SimpiCI::Event' }
 
 sub run {
   my ( $class, @arguments ) = @_;
@@ -36,6 +40,9 @@ sub run {
 
   umask 0077;
   my $config = JSON::MaybeXS->new->decode(path($config_path)->slurp_utf8);
+  # In either mode and before anything is polled: the event of the first
+  # changed ref would refuse the URL too, but with the daemon long running.
+  $class->check_clone_urls($config);
   my $store = SimpiCI::Store->new(root => path($config->{root} // './var'));
   my $configured_runner = $runner_script // $config->{runner};
   my $runner = SimpiCI::Runner->new(
@@ -79,11 +86,31 @@ sub run {
   return $status;
 }
 
+sub check_clone_urls {
+  my ( $class, $config ) = @_;
+
+  # Only the rule of the event is applied. Any other shape is left to the
+  # poll, which reports it as before.
+  my $repositories = $config->{repositories};
+  return unless ref $repositories eq 'ARRAY';
+  for my $index (0 .. $#$repositories) {
+    my $repository = $repositories->[$index];
+    next unless ref $repository eq 'HASH';
+    my $clone_url = $repository->{clone_url};
+    next unless defined $clone_url && !ref $clone_url;
+    my $reason = $class->event_class->clone_url_rejection($clone_url) // next;
+    my $name = $repository->{name};
+    croak __PACKAGE__.' repository '.( defined $name && !ref $name ? $name : '?' )
+      .' (repositories['.$index.']): '.$reason;
+  }
+  return;
+}
+
 sub unread_message {
   my ( $class, $repository, $reason ) = @_;
 
-  # SimpiCI::Event refuses credentials in a URL, but only once a changed ref
-  # is run; an unreadable remote is reported before that.
+  # run refuses credentials in an HTTP(S) URL before it polls, so it never
+  # gets here with them; a direct caller is not held to that.
   my $configured = $repository->{clone_url} // '';
   ( my $clone_url = $configured ) =~ s{\A(https?://)[^/]*@}{$1}i;
   $reason =~ s/\Q$configured\E/$clone_url/g if length $configured;
@@ -115,6 +142,17 @@ deduplication. In that mode the daemon checks every secret grant before it
 polls and exits with a message naming the repository, the secret and the
 reason if one is unusable; it therefore needs read access to the secret files.
 Local mode does not evaluate grants.
+
+In either mode the daemon first holds the C<clone_url> of every configured
+repository against L<SimpiCI::Event/clone_url_rejection> and exits before it
+polls if one is refused:
+
+  SimpiCI::App::Eventd repository owner/project (repositories[0]): clone URL must not contain credentials; provide them through a Git credential helper of the account that runs git
+
+The message names the repository and its position in the configuration, never
+the URL. The credentials of an C<https://user:token@...> URL belong in the Git
+configuration of the account the daemon runs as, see C<gitcredentials(7)>; in
+dispatcher mode the worker fetches the commit and needs its own.
 
 A repository whose refs cannot be read does not end the daemon. It writes one
 line to standard error and goes on with the next repository:
@@ -152,14 +190,29 @@ C<timeout> setting, which limits a run. See
 L<SimpiCI::Source::GitPoll/observe> for how the command is ended.
 
 Nothing beyond the observation is covered: a run that cannot be
-started, an unwritable queue or state root, and an unusable grant still end
-the daemon.
+started, an unwritable queue or state root, a refused clone URL and an
+unusable grant still end the daemon.
 
 =head1 METHODS
 
 =head2 dispatcher_class
 
 Class used to check the grants in dispatcher mode.
+
+=head2 event_class
+
+Class whose clone URL rule L</check_clone_urls> applies.
+
+=head2 check_clone_urls
+
+  SimpiCI::App::Eventd->check_clone_urls($config);
+
+Croaks for the first repository of a decoded configuration whose C<clone_url>
+is refused by L<SimpiCI::Event/clone_url_rejection>, with the name of the
+repository, its index and the reason, but without the URL. L</run> calls it
+before it polls. It applies that one rule and is no validation of the
+configuration: a repository without a clone URL, or an entry of any other
+unexpected shape, passes and shows when it is polled.
 
 =head2 run
 
@@ -176,7 +229,8 @@ was not polled, 0 otherwise.
 Formats the single log line for a repository that was not polled, be it that
 its refs could not be read or that L<SimpiCI::Source::GitPoll/rejection>
 refused what was read. Credentials in an HTTP or HTTPS clone URL are left out,
-also where the reason repeats that URL.
+also where the reason repeats that URL. L</run> refuses such a URL before it
+polls, so this only matters to a direct caller.
 
 =head1 OPTIONS
 

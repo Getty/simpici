@@ -52,4 +52,8 @@ a message naming the repository, the secret and the reason, and takes no
 lease. A finish request is served without that check, so a completed run is
 not lost to a configuration error.
 
+The clone URLs of the configuration are not checked here. This program reads
+no remote, and a queued event passed L<SimpiCI::Event> when it was enqueued;
+C<simpicid> refuses a clone URL with credentials before it polls.
+
 =cut

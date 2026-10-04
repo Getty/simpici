@@ -74,6 +74,25 @@ that is valid today. Important details:
 - `refs` filters the Git polling query, not arbitrary manual inputs.
 - `build_initial: false` skips only the initial baseline. Refs that appear
   later are built; deletion alone does not start a run.
+- `clone_url` must not contain credentials. `simpicid` checks every
+  repository when it starts, in local and in dispatcher mode, and exits
+  before it polls anything:
+
+  ```text
+  SimpiCI::App::Eventd repository acme/example (repositories[0]): clone URL must not contain credentials; provide them through a Git credential helper of the account that runs git
+  ```
+
+  The message names the repository and its position in the configuration,
+  never the URL. It is given for an `http://` or `https://` URL with a user
+  part before the host, such as `https://user:token@…`; whitespace and
+  control characters are refused the same way, with their own reason.
+  `git@host:path` and `ssh://git@host/path` stay valid. A clone URL travels
+  with every event into the queue and the job environment, so credentials
+  belong to git instead: set `credential.helper` in the Git configuration of
+  the account `simpicid` runs as, for example the `store` helper with its
+  `~/.git-credentials`, a file only that account may read (`gitcredentials(7)`,
+  `git-credential-store(1)`). In dispatcher mode the worker account fetches
+  the commit and needs its own. `simpici-dispatch` does not repeat this check.
 - `timeout` limits executor runtime. Git commands have their own limits;
   this is not an equivalent overall limit for the entire run.
 - `simpicid --once` can exit with 0 even if a job has failed. Read the build
@@ -87,8 +106,7 @@ that is valid today. Important details:
   ```
 
   The line repeats every cycle while the repository stays unreadable.
-  Credentials in an HTTP(S) clone URL are left out of it. `simpicid --once`
-  still polls every repository and then exits with 1.
+  `simpicid --once` still polls every repository and then exits with 1.
 - An unreadable repository keeps its recorded tips, so its return alone
   builds nothing. A repository that has never been read has no baseline yet:
   its first successful poll is the initial one, and `build_initial` decides.
@@ -132,8 +150,8 @@ that is valid today. Important details:
   synchronisation. A repository that loses only some of its refs forgets
   those and treats them as new if they come back.
 - Only reading the refs is tolerated. A run that cannot be started, an
-  unwritable state root or queue, and an unusable grant end the daemon as
-  before.
+  unwritable state root or queue, a refused clone URL and an unusable grant
+  end the daemon.
 - Local polling remembers ref tips. Persistent tuple deduplication is only
   available with the queue in dispatcher mode.
 
