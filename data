@@ -1,0 +1,28 @@
+---
+claimed_at: 2026-10-04T01:07:37Z
+claimed_by: simpici
+class: standard
+completed: 2026-10-04T01:07:37Z
+created: 2026-10-04T01:00:28Z
+id: 8
+priority: high
+started: 2026-10-04T01:07:37Z
+status: done
+tags:
+- dispatcher
+- secrets
+title: 'Grant-refs: Muster refs/<pfad>/* für Tag-Releases'
+updated: 2026-10-04T01:07:37Z
+---
+
+Plan: /home/getty/dev/perl-developer/docs/superpowers/plans/2026-10-02-simpici-deb-voraussetzungen.md, Task 1. Spec: /home/getty/dev/perl-developer/docs/superpowers/specs/2026-10-02-deb-pakete-simpici-design.md (Abschnitt SimpiCI-Ausbau). Secret-Grants vergleichen refs heute exakt (lib/SimpiCI/Dispatcher.pm:22), ein Release-Tag bekommt so nie ein Token. Neu: refs/<pfad>/* passt auf alles darunter; jedes andere * ist ein Konfigurationsfehler (croak). Fertig: t/61-grant-refs.t grün, deploy/README.md angepasst.
+
+2026-10-04 01:03 Worker gestartet. t/61-grant-refs.t woertlich aus dem Plan angelegt. Roter Lauf wartet: loadguard verweigert prove, beide Heavy-Slots belegt durch fremden Testlauf (podman/prove in ~/dev/kubernetes-ocp). Kein Umgehen per perl -Ilib; warte auf freien Slot.
+
+2026-10-04 01:06 Rot bestaetigt (prove -l t/61-grant-refs.t vor der Implementierung): Failed 8/14 - Tests 1-2 (Muster liefern {} statt Secret) und 9-14 (die sechs dies-Faelle sterben nicht, GOT UNDEF). Gruen danach: t/61 + t/60 PASS, prove -lr t/ PASS (Files=11, Tests=87). Abweichungen vom Plan: (1) _ref_matches ist Methode, Aufruf self->_ref_matches(pattern, ref), nicht freie Funktion - Hausregel getty-perl-core: in einer Moo-Klasse ist jeder Helper eine Methode. Logik und Regex wie im Plan. (2) t/61-grant-refs.t woertlich aus dem Plan, plus eine Zusatz-Assertion nach dem gruenen Lauf: refs [refs/tags/*, refs/*] gegen refs/tags/0.504 muss croaken. Pinnt das im Plan als gewollt beschriebene Verhalten (grep wertet alle Eintraege aus), das sonst kein Test haelt. (3) POD-Satz wie im Plan ersetzt, Absatz nur neu umbrochen.
+
+2026-10-04 01:06 Also found, nicht im Scope, nicht behoben: (a) Ein ungueltiges Grant-Muster wird erst beim claim erkannt, NACH queue->claim (Dispatcher request: erst claim, dann _secrets). bin/simpici-dispatch stirbt, der Worker bekommt nichts, der Lease laeuft ab, der Lauf wird interrupted. Weil der ref-Check als erster im Grant steht, trifft das jeden Lauf des Repos (alle refs, auch pull_request), nicht nur Tags. Gilt genauso schon fuer die bestehenden croaks (invalid secret name, Secret-Datei fehlt oder leer). Fail-closed, aber ein Tippfehler in refs legt das Repo still. Vorschlag Karte fuers simpici-Board: Grants beim Dispatcher-Start bzw. vor queue->claim validieren. (b) Das Plan-Regex refs/[^*]+/* akzeptiert leere Segmente wie refs///* oder refs/tags//*. Ungefaehrlich: SimpiCI::Event verbietet // und * in Refs, ein solches Muster passt auf nichts. Bewusst nicht verschaerft. (c) Polling-refs gehen direkt an git ls-remote, refs/tags/* wirkt dort schon als Glob, annotierte Tags werden auf den Commit gepeelt (Source/GitPoll.pm). Dokumentiert ist das Polling-Glob nirgends.
+
+2026-10-04 01:06 Done: Secret-Grant-refs akzeptieren refs/<pfad>/* (alles darunter), jedes andere * croakt mit 'invalid ref pattern'; exakter Vergleich sonst unveraendert, pull_request bekommt weiter nichts. Geaendert: lib/SimpiCI/Dispatcher.pm (_ref_matches als Methode, Grant-Check, POD), t/61-grant-refs.t (neu, 15 Tests), deploy/README.md (Understand secret grants). Verifiziert: roter Lauf vor der Implementierung (8/14 failed), danach prove -l t/61-grant-refs.t t/60-dispatch.t PASS und prove -lr t/ PASS (Files=11, Tests=87). Nicht committet, Changes unberuehrt. Commit-Subject: Allow refs/<path>/* patterns in secret grants
+
+2026-10-04 01:07 Committed as c3a369c on deb-voraussetzungen.
