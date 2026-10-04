@@ -1,0 +1,30 @@
+---
+claimed_at: 2026-10-04T01:26:04Z
+claimed_by: simpici
+class: standard
+completed: 2026-10-04T01:26:04Z
+created: 2026-10-04T01:00:36Z
+id: 10
+priority: high
+started: 2026-10-04T01:26:04Z
+status: done
+tags:
+- deploy
+- dispatcher
+title: Dispatcher als Container (simpicid + sshd-Endpunkt) für die src.ci-VM
+updated: 2026-10-04T01:26:04Z
+---
+
+Plan: /home/getty/dev/perl-developer/docs/superpowers/plans/2026-10-02-simpici-deb-voraussetzungen.md, Task 3. Spec: /home/getty/dev/perl-developer/docs/superpowers/specs/2026-10-02-deb-pakete-simpici-design.md. deploy/dispatcher/: Containerfile, sshd_config, compose.yaml (poller + ssh auf 2222), dispatcher.example.json (langertha/langertha + langertha/raider auf src.ci, Grant refs/tags/*), authorized_keys.example; t/65-dispatcher-example.t; deploy/README.md Abschnitt 5. Rauchtest mit echtem Container laut Plan Step 6. Braucht Task 1 (Grant-Muster) für den Test.
+
+2026-10-04 01:15 Step 1+2: t/65-dispatcher-example.t angelegt (Plan + zusaetzliche Pruefung 'AllowStreamLocalForwarding no'). Roter Lauf wie erwartet: "Error open (<:unix) on 'deploy/dispatcher/dispatcher.example.json': No such file or directory at t/65-dispatcher-example.t line 11", Result: FAIL.
+
+2026-10-04 01:19 Steps 3-5 fertig, Baum commit-ready, NICHT committet, kein handoff (Rauchtest Step 6 + dzil test Step 7 stehen aus). Neu: deploy/dispatcher/{Containerfile,sshd_config,compose.yaml,dispatcher.example.json,authorized_keys.example}, t/65-dispatcher-example.t, .dockerignore; geaendert: .gitignore, deploy/README.md. Verifiziert: prove -l t/65-dispatcher-example.t gruen (15 Tests), prove -lr t/ gruen (13 Dateien, 105 Tests). Ohne Docker lokal geprueft (unprivilegierter sshd auf 127.0.0.1, OpenSSH 10.0 = trixie wie perl:5.40-slim, ausgeliefertes sshd_config nur mit lokalen Pfaden/Port/Account): sshd -t ok; claim auf leerer Queue liefert {}; 'ssh ... id' fuehrt id nicht aus (JSON-Fehler, exit 255); PTY verweigert; lokaler Port-Forward 'refused'. Abweichungen vom Plan: (1) README: neuer Abschnitt als '5. Dispatcher in containers' nach Abschnitt 4 eingefuegt, Forgejo Actions -> 6, Reports and viewer -> 7; keine Nummern-/Ankerverweise sonst gefunden. (2) README-Kommandos: Rechte per install -m VOR dem chown gesetzt; im Plan lief 'sudo chmod 0600 secrets/*' nach 'chmod 0700 secrets' (990), der Glob expandiert dann fuer den aufrufenden User nicht mehr. Host-Key erst pruefen, dann in known_hosts. Hinweis auf docker compose restart nach Config-Aenderung. (3) Containerfile: Account 990 wird VOR apt-get install angelegt (perl:5.40-slim ist trixie; openssh-server zieht dort systemd nach, dessen sysusers dynamische System-IDs von 999 abwaerts vergibt); Wrapper rufen /usr/local/bin/perl absolut auf (sshd-Session hat nur den Default-PATH, im Image liegt daneben /usr/bin/perl ohne Module). (4) sshd_config zusaetzlich 'AllowStreamLocalForwarding no', im Test mitgeprueft. (5) Neue Root-.dockerignore fuer state/secrets/ssh/dispatcher.json unter deploy/dispatcher: nach dem chown auf 990 mit 0700 sind sie fuer den aufrufenden User unlesbar und gehoeren nicht in den Build-Kontext (context ist das Repo-Root). (6) Kein skip_all im Test: Git::GatherDir (include_dotfiles=1) nimmt deploy/ in den Build, belegt durch .build/previous; ein stilles Ueberspringen wuerde einen Paketierungsfehler verdecken. Achtung dzil test: sieht nur Dateien im Git-Index, neue Dateien vorher stagen.
+
+2026-10-04 01:20 Also found (nicht in Scope, nicht angefasst): simpicid bricht bei fehlgeschlagenem git ls-remote mit croak ab (GitPoll->poll, in App::Eventd nicht abgefangen). Im Container heisst das Restart-Schleife des poller-Service, solange ein konfiguriertes Repo nicht erreichbar ist oder noch nicht existiert (src.ci-Org langertha). Board: simpici.
+
+2026-10-04 01:23 Rauchtest Plan Step 6 bestanden, aber auf ROOTLESS PODMAN 5.8.4 (docker-CLI gegen podman.sock auf reuben) — echtes Docker ist ungeprueft. Ergebnisse: Claim auf leerer Queue liefert genau {} (exit 0). 'ssh ... id' fuehrt id nicht aus: 'malformed JSON string' aus simpici-dispatch, exit 255, keine uid=-Zeile. PTY-Anfrage abgelehnt, fremder Schluessel und root-Login: Permission denied (publickey). Poller laeuft als 990, restarts=0, hat state/repositories/<hash>.json mit refs/heads/main geschrieben (ls-remote gegen GitHub ok), Queue leer. /run/sshd ist im Container vorhanden. Abweichungen vom Plan-Ablauf: (1) 'docker compose up --build' scheitert hier an BuildKit unter rootless Podman (crun: create /sys/fs/cgroup/docker: Permission denied) - Image stattdessen mit 'podman build -f Containerfile -t simpici-dispatcher:local ../..' gebaut, dann 'docker compose up -d --no-build'. Liegt an der Maschine, nicht an den Dateien. (2) sudo verlangt ein Passwort: chown 990:990 ueber einen Container im User-Namespace statt sudo chown; ssh/ gehoert dem aufrufenden Nutzer (= root im Container). (3) Plan Step 6 setzt keine Rechte auf ssh/: mit umask 002 waren ssh/ 0775 und authorized_keys 0664, das lehnt sshd (StrictModes) ab - vor dem Start chmod 0755 ssh und 0644 authorized_keys gesetzt, so wie es die README-Anleitung per install -m tut. (4) Smoke-Key liegt im Job-tmp statt /tmp.
+
+2026-10-04 01:25 Done: deploy/dispatcher/ (Containerfile, sshd_config, compose.yaml, dispatcher.example.json, authorized_keys.example), .dockerignore, .gitignore, t/65-dispatcher-example.t, deploy/README.md Abschnitt 5 (Forgejo Actions -> 6, Reports and viewer -> 7). Verifiziert: prove -lr t/ PASS (Files=13, Tests=105); dzil test PASS (Files=15, Tests=119, t/65 laeuft im Build mit, kein skip_all noetig); Rauchtest Step 6 auf rootless Podman bestanden (siehe Notiz oben), echtes Docker ungeprueft. Nach dem Rauchtest README-Schlussabsatz von Abschnitt 5 angepasst: Befehle setzen rootful Docker voraus (ungetestet), fuer rootless Podman die getestete Variante mit podman build, podman unshare chown und compose up --no-build. Commit-Subject: Add a container setup for the dispatcher with its SSH endpoint
+
+2026-10-04 01:26 Committed as abc19bb on deb-voraussetzungen
