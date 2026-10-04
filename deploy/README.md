@@ -170,7 +170,11 @@ VMware is one possible VM environment, not a SimpiCI protocol requirement.
 2. **Set `mode: "dispatcher"`.** Otherwise, the daemon uses the local runner.
    The dispatcher itself needs neither a Docker socket nor a build toolchain.
 3. Install [simpicid.service](simpicid.service) and enable it with
-   `systemctl enable --now simpicid` only after checking the paths.
+   `systemctl enable --now simpicid` only after checking the paths. The
+   daemon reads every granted secret file when it starts and refuses to start
+   while a grant is unusable, so its account needs read access to those files,
+   like the account behind the SSH endpoint. Restart it after changing the
+   configuration; the journal names an unusable grant.
 4. Use a separate key and a fixed worker name for each worker.
    Assign a forced command to the authorized key:
 
@@ -201,9 +205,34 @@ A grant is not a general environment file for all jobs:
 - `sources` can further restrict the source.
 - `phases` may contain only `publish` and `deploy`.
 - Pull-request events receive no grants.
+- `name` is the environment variable the job sees: `CICD_<NAME>` or
+  `<NAME>_TOKEN` in capitals. A variable the executor assigns itself is
+  rejected as a name, because the executor's value would win: everything in
+  the [job variable table](../docs/executor.md#variables-inside-jobs),
+  `CICD_PROVIDER_OUT`, `CICD_REGISTRY`, `CICD_REGISTRY_USER` and
+  `CICD_PUBLISH_IMAGE`. `CICD_REGISTRY_PASSWORD` is the registry variable a
+  grant can supply; registry host and user come from the worker host's
+  environment.
 - Each secret value is stored in a private file as a single nonempty line.
 - Mirror entries need their own grants if both clone URLs may produce runs.
   Otherwise, the source actually used for the run determines the outcome.
+
+The grants of all repositories are checked together, whether or not a run
+would match them: when `simpicid` starts in dispatcher mode, and again by
+`simpici-dispatch` before every claim. The check covers the name, the ref
+patterns, the list shapes, the phases and the secret file, which must be
+readable and hold one nonempty line. A failure names the configuration entry
+and the reason, never a value:
+
+```text
+SimpiCI::Dispatcher repository acme/example (repositories[0]), secret CICD_REGISTRY_PASSWORD (secrets[0]): cannot read secret file /etc/simpici/secrets/registry-password: No such file or directory
+```
+
+`simpicid` then exits before it polls. `simpici-dispatch` fails the claim
+without taking a lease: the message reaches the worker's log, queued runs stay
+queued, and they are served once the configuration is usable again. One
+unusable grant therefore stops the claims of every repository, not only its
+own. The completion of a run that was already claimed is still accepted.
 
 The example configuration shows the complete current grant structure.
 Files containing secret values belong to the service account, with mode
@@ -263,7 +292,9 @@ Claims expire after the configured execution timeout plus 30 minutes for
 checkout and transfer. On the next claim, expired work is marked
 `interrupted`, **not automatically run again**: a publish or deploy operation
 may already have taken effect. There is no heartbeat, automatic publish retry
-or ready-to-use retry/cancel operator CLI.
+or ready-to-use retry/cancel operator CLI. While a grant is unusable, no claim
+is served, so expired work keeps its `running` state until the configuration
+is fixed.
 
 The worker persists `completion.json` before uploading it. If an SSH response
 is lost, the completion can therefore be retried idempotently without
@@ -331,7 +362,9 @@ The state directory holds the queue and the public report projection under
 `state/public/runs`; section 7 applies to publishing it. After changing
 `dispatcher.json`, run `docker compose restart`: the poller reads it only at
 startup, and a file replaced by an editor is not visible through the mount
-before that. Secret files are read at each claim.
+before that. Secret files are read at each claim, so a rotated value needs no
+restart. The poller also reads them once when it starts and exits if a grant
+is unusable; `docker compose logs poller` names it.
 
 On the worker, name the port in `~/.ssh/config` of the account that runs
 `simpici-worker`, because `--dispatcher` takes no port:

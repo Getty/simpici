@@ -9,10 +9,13 @@ use Getopt::Long qw( GetOptionsFromArray );
 use JSON::MaybeXS;
 use Path::Tiny qw( path );
 use Pod::Usage qw( pod2usage );
+use SimpiCI::Dispatcher;
 use SimpiCI::Runner;
 use SimpiCI::Queue;
 use SimpiCI::Source::GitPoll;
 use SimpiCI::Store;
+
+sub dispatcher_class { 'SimpiCI::Dispatcher' }
 
 sub run {
   my ( $class, @arguments ) = @_;
@@ -41,7 +44,11 @@ sub run {
     $configured_runner ? (runner_script => path($configured_runner)) : ()
   );
 
-  $runner = SimpiCI::Queue->new(store => $store) if ($config->{mode} // 'local') eq 'dispatcher';
+  if (($config->{mode} // 'local') eq 'dispatcher') {
+    $runner = SimpiCI::Queue->new(store => $store);
+    # Do not poll for a configuration that no claim could be served from.
+    $class->dispatcher_class->new(queue => $runner, config => $config)->validate;
+  }
 
   while (1) {
     for my $repository ($config->{repositories}->@*) {
@@ -75,9 +82,16 @@ SimpiCI::App::Eventd - implementation of the simpicid polling daemon
 Polls configured Git refs and tracks their last observed tips. In local mode,
 changed tips run exact revisions through the shared phased container executor.
 Dispatcher mode enqueues events with durable repository/ref/commit
-deduplication.
+deduplication. In that mode the daemon checks every secret grant before it
+polls and exits with a message naming the repository, the secret and the
+reason if one is unusable; it therefore needs read access to the secret files.
+Local mode does not evaluate grants.
 
 =head1 METHODS
+
+=head2 dispatcher_class
+
+Class used to check the grants in dispatcher mode.
 
 =head2 run
 

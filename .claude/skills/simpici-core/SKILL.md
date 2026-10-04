@@ -33,7 +33,9 @@ without demonstrated need and an explicit decision.
 - Job exit 0 is success, 78 is skipped, and every other exit fails the phase.
   The current executor returns 0 even when all jobs skip.
 - Mount the workspace read-only and give each job separate writable output
-  and artifact directories. There is no automatic cross-job artifact transfer.
+  and artifact directories. Artifacts of earlier phases are mounted read-only
+  under `$CICD_INPUTS/<phase>/<job>/`; jobs of the same phase never see each
+  other's, and nothing is transferred between workers or to the dispatcher.
 - Job scripts need executable bits and an interpreter available in their image;
   the executor does not install Bash or clear the image ENTRYPOINT.
 - Registry credentials go only to `publish` and `deploy` jobs. Phase selection

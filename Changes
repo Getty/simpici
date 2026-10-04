@@ -11,6 +11,14 @@
     deploy phases; redact uploaded logs and keep values out of command lines.
     A grant ref is exact or a refs/<path>/* pattern (refs/tags/* covers every
     release tag); any other use of "*" is rejected as a configuration error.
+    Every grant is checked when simpicid starts in dispatcher mode and before
+    each claim: an unusable one (name, ref pattern, phases, secret file) is
+    reported with its repository and secret, simpicid does not start, and no
+    lease is taken, while completions are still accepted. A secret name may
+    not be any variable the executor assigns itself (CICD_BRANCH, CICD_TAG,
+    CICD_REGISTRY, CICD_REGISTRY_USER, ...); only CICD_REGISTRY_PASSWORD
+    passes through. In dispatcher mode simpicid needs read access to the
+    granted secret files.
   - Discover repository jobs from their filenames, execute them in selected
     containers and enforce ordered phase barriers with bounded same-phase
     concurrency (default 2).
@@ -18,7 +26,7 @@
     CICD_INPUTS=/inputs with <phase>/<job>/ of each earlier phase mounted
     read-only. Jobs of the same phase never see each other, a job that wrote
     nothing leaves an empty directory, and nothing is transferred between
-    workers or to the dispatcher. CICD_INPUTS is reserved as a secret name.
+    workers or to the dispatcher.
   - Merge repository jobs and provider-generated jobs in a writable staging
     directory: operator-selected provider images (SIMPICI_PROVIDERS, exposed as
     the reusable workflow's "provider" input) generate additional .cicd/*.sh

@@ -46,4 +46,10 @@ Install as an SSH forced command with restrict and no forwarding. Accepts one
 size-limited JSON claim or finish request on standard input. The dispatcher
 never checks out or executes repository code. Use a dedicated account.
 
+The configuration is read for each request. A claim first checks every secret
+grant of every repository; if one is unusable, the program exits nonzero with
+a message naming the repository, the secret and the reason, and takes no
+lease. A finish request is served without that check, so a completed run is
+not lost to a configuration error.
+
 =cut

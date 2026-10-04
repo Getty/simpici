@@ -107,7 +107,10 @@ environment variables do not automatically become job variables either.
 
 Only `publish` and `deploy` jobs receive the registry variables
 `CICD_REGISTRY`, `CICD_REGISTRY_USER`, `CICD_REGISTRY_PASSWORD` and
-`CICD_PUBLISH_IMAGE` through the designated handoff.
+`CICD_PUBLISH_IMAGE` through the designated handoff. Of these, a dispatcher
+grant can supply only `CICD_REGISTRY_PASSWORD`, which the executor passes
+through. The other three and every variable in the table above are assigned
+by the executor and are rejected as secret names.
 
 This phase boundary is **not a complete trust boundary**: an untrusted
 candidate could include its own publish script. The decision about which
