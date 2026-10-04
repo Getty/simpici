@@ -95,7 +95,7 @@ for my $phase (qw( publish deploy )) {
     my ( $root, $finish, $warned, $error ) = attempt({
       $phase => { GOOD_TOKEN => $good, PUBLISH_TOKEN => $refused_value{$case} }
     });
-    my $reason = "SimpiCI::Worker run 7 aborted: SimpiCI::Worker invalid secret value in claim\n";
+    my $reason = "SimpiCI::Worker run 7 aborted: invalid secret value in claim\n";
     is $error, undef, $case.' in '.$phase.' does not stop the worker';
     is $finish->{result}, { state => 'failed', exit_code => 125 }, 'it is reported as a failed run';
     is $finish->{log}, $reason, 'with the reason as its log';
@@ -111,7 +111,7 @@ for my $case (sort keys %refused_name) {
   my ( $root, $finish, $warned, $error ) = attempt({
     publish => { GOOD_TOKEN => $good, $refused_name{$case} => $inner }
   });
-  my $reason = "SimpiCI::Worker run 7 aborted: SimpiCI::Worker invalid secret name in claim\n";
+  my $reason = "SimpiCI::Worker run 7 aborted: invalid secret name in claim\n";
   is $error, undef, $case.' does not stop the worker';
   is $finish->{result}, { state => 'failed', exit_code => 125 }, 'it is reported as a failed run';
   is $finish->{log}, $reason, 'with the reason as its log';

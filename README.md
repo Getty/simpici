@@ -467,6 +467,19 @@ A checkout command or an executor that a signal ended is `signalled` with the
 exit code 128 plus the signal, never a success, and the checkout does not go
 on after it.
 
+A claim the worker cannot execute, such as an event it refuses or a secret
+file it cannot write, is reported as `failed` with exit code `125`, and its
+log ends with `SimpiCI::Worker run <run> aborted: <reason>`. The log is
+published, so the reason is one of a fixed list and never the text of the
+error: `invalid event in claim`, `invalid secrets in claim`,
+`invalid secret name in claim`, `invalid secret value in claim`,
+`invalid timeout in claim`, `cannot write secret files`,
+`cannot create temporary directory`, `run supervisor failed` and, for
+everything else, `internal error`. It names no path of the worker, no file
+or line of its installation and no value of the claim. The error itself is
+in the journal of the worker, in the same line; see
+[recovery and limits](deploy/README.md#recovery-and-limits).
+
 A run does not outlive whoever supervises it. `simpici-worker`, a local
 `simpicid` and `simpici` end a run that is in progress when they receive
 `TERM`, `INT` or `HUP`: the process group of the executor is ended, the job
@@ -482,13 +495,16 @@ containers of a run that was killed together with everything around it. See
 
 Native runs write public report JSON and logs under `<root>/public/`.
 **Local logs are not automatically redacted.** Review their contents before
-publishing them. Only the worker/dispatcher path redacts secret values assigned
-by the dispatcher: every literal occurrence of every value, also where two of
-them overlap. The dispatcher keeps the values of a claim in the clear under
-`<root>/claims/` until the completion of the run is accepted, or until the
-first worker request after its lease expired. The worker keeps them under
-`<root>/secrets/` while the run lasts; a worker that was killed removes what
-it left there at its next start.
+publishing them. The lines SimpiCI itself adds to a log name neither the
+state root nor the installation, and the checkout is made quietly; what git,
+the container runtime and the jobs print is passed on as it is, the clone
+URL in the output of `git fetch` included. Only the worker/dispatcher path
+redacts secret values assigned by the dispatcher: every literal occurrence of
+every value, also where two of them overlap. The dispatcher keeps the values
+of a claim in the clear under `<root>/claims/` until the completion of the
+run is accepted, or until the first worker request after its lease expired.
+The worker keeps them under `<root>/secrets/` while the run lasts; a worker
+that was killed removes what it left there at its next start.
 
 The worker keeps no log either. What the jobs print is written unredacted
 while the run lasts, redacted into the completion when it is over, and then

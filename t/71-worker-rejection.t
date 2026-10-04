@@ -12,7 +12,9 @@ use SimpiCI::Store;
 use SimpiCI::Worker;
 
 # A claim the worker cannot execute: no secret file stays behind, and the
-# dispatcher hears a failed run with the reason instead of nothing.
+# dispatcher hears a failed run with the reason instead of nothing. The reason
+# is one of a list, for the log is published; what the error said is for
+# standard error. t/78-worker-abort-reasons.t goes through the list.
 
 {
   package TestWorker;
@@ -143,19 +145,14 @@ subtest 'an event the worker refuses' => sub {
   is report(1)->{exit_code}, 125, 'with the exit code of a claim that was not executed';
   is $json->decode($root->child('queue/1.json')->slurp_utf8)->{state}, 'failed',
     'and holds no lease';
-  like log_of(1), qr/run 1 aborted: SimpiCI::Event clone URL must not contain a password/,
-    'the log names the reason';
+  is log_of(1), "SimpiCI::Worker run 1 aborted: invalid event in claim\n",
+    'the log is the reason, one of the list, and nothing else';
   unlike log_of(1), qr/\Q$secret\E|\Q$password\E/, 'without a secret value or the URL';
-  like $warned, qr/run 1 aborted: SimpiCI::Event clone URL must not contain a password/,
-    'the worker names the reason on standard error';
+  like $warned, qr/\ASimpiCI::Worker run 1 aborted: invalid event in claim: SimpiCI::Event clone URL must not contain a password; [^\n]* runs git at [^\n]+ line \d+\.\n\z/,
+    'standard error has the reason and what the event was refused for, in one line';
   unlike $warned, qr/\Q$secret\E|\Q$password\E/, 'without a value there either';
-  my $reason = 'SimpiCI::Worker run 1 aborted: SimpiCI::Event clone URL must not contain a'
-    .' password; a user name alone is accepted, and SSH authenticates with a key of the'
-    ." account that runs git\n";
-  is log_of(1), $reason, 'the log is the reason, and ends where the message of the event ends';
-  is $warned, $reason, 'standard error says the same';
-  unlike log_of(1).$warned, qr/$raised_at|\Q$worker_root\E/,
-    'neither names a file of the installation or the store of the worker';
+  unlike log_of(1), qr/$raised_at|\Q$worker_root\E/,
+    'the log names neither a file of the installation nor the store of the worker';
   ok !$worker_root->child('completion.json')->exists, 'the completion was delivered';
 };
 
@@ -165,13 +162,15 @@ subtest 'a reason that quotes a secret value' => sub {
   ok !$worker_root->child('secrets')->exists, 'no secret file is written for it';
   is report(2)->{state}, 'failed', 'the run is failed at the dispatcher';
   my ( $finish ) = grep { $_->{operation} eq 'finish' && $_->{run} == 2 } $worker->requests->@*;
-  like $finish->{log} // '', qr/run 2 aborted: .*\[REDACTED\]/,
-    'the worker sends the reason with the value redacted';
+  is $finish->{log}, "SimpiCI::Worker run 2 aborted: invalid event in claim\n",
+    'the worker sends the reason, which quotes nothing';
   unlike $finish->{log} // $secret, qr/\Q$secret\E/, 'the value does not leave the worker';
-  unlike $warned, qr/\Q$secret\E/, 'nor reach its standard error';
-  like $warned, qr/run 2 aborted: /, 'which still names the run';
-  unlike $finish->{log}.$warned, qr/$raised_at|\Q$worker_root\E/,
-    'neither names a file of the installation or the store of the worker';
+  like $warned,
+    qr/\ASimpiCI::Worker run 2 aborted: invalid event in claim: [^\n]*\[REDACTED\][^\n]*\n\z/,
+    'what the error quoted reaches standard error with the value redacted';
+  unlike $warned, qr/\Q$secret\E/, 'and not the value';
+  unlike $finish->{log}, qr/$raised_at|\Q$worker_root\E/,
+    'the log names neither a file of the installation nor the store of the worker';
   unlike log_of(2), qr/\Q$secret\E/, 'the published log is free of it';
 };
 
@@ -183,11 +182,14 @@ subtest 'a run that croaks with the secret files in place' => sub {
   is report(3)->{exit_code}, 125, 'with the exit code of an aborted claim';
   like log_of(3), qr/PUBLISH_TOKEN=\[REDACTED\]/,
     'the output up to the failure arrives, redacted';
-  like log_of(3), qr/run 3 aborted: SimpiCI::Store->write_json cannot publish/,
+  like log_of(3), qr/\nSimpiCI::Worker run 3 aborted: run supervisor failed\n\z/,
     'followed by the reason';
   unlike log_of(3), qr/\Q$secret\E/, 'without the secret value';
-  like $warned, qr/run 3 aborted: /, 'the worker names the run on standard error';
-  unlike log_of(3).$warned, $raised_at, 'neither says where in the installation it croaked';
+  unlike log_of(3), qr/$raised_at|\Q$worker_root\E|cannot publish/,
+    'and without the file that could not be published, or where in the installation it croaked';
+  like $warned,
+    qr/\ASimpiCI::Worker run 3 aborted: run supervisor failed: SimpiCI::Store->write_json cannot publish \Q$worker_root\E\/public\/runs\/3\.json: [^\n]+\n\z/,
+    'the worker names the file on standard error, in one line';
   ok !$worker_root->child('completion.json')->exists, 'the completion was delivered';
 };
 
@@ -201,8 +203,9 @@ subtest 'a completion that cannot be saved' => sub {
   my $completion = $worker_root->child('completion.json');
   $completion->mkpath;
   my ( $response, $error, $warned ) = attempt();
-  like $error, qr/SimpiCI::Worker cannot save the completion of run 4: /,
-    'is an error of the worker';
+  like $error,
+    qr/\ASimpiCI::Worker cannot save the completion of run 4: SimpiCI::Store->write_json cannot publish \Q$worker_root\E\/completion\.json: [^\n]+ at \S+ line \d+\.\n\z/,
+    'is an error of the worker, in one line with the file it could not write';
   ok -d $worker_root->child('public/runs/4.json'), 'the job ran with its secret file';
   ok !$worker_root->child('secrets/4')->exists, 'which is removed all the same';
   ok !$worker_root->child('public/runs/4.log')->exists, 'and so is the log it printed the secret to';
@@ -241,8 +244,7 @@ subtest 'an event whose fields have the wrong type' => sub {
     my $finish = $refusing->requests->[-1];
     is $finish->{result}, { state => 'failed', exit_code => 125 },
       $name.' is reported as a failed run';
-    like $finish->{log},
-      qr/\ASimpiCI::Worker run 7 aborted: SimpiCI::Worker invalid event in claim/,
+    is $finish->{log}, "SimpiCI::Worker run 7 aborted: invalid event in claim\n",
       'with a reason that names the claim';
     unlike $finish->{log}.$warned, qr/\Q$password\E|forge\.invalid/,
       'and quotes nothing of the event';
@@ -252,24 +254,34 @@ subtest 'an event whose fields have the wrong type' => sub {
   }
 };
 
-subtest 'where an error was raised is cut off its reason' => sub {
+subtest 'what an error says is no reason' => sub {
   my $read = "one\ntwo\n";
   my @raised = (
-    [ 'a croak whose message says " at " itself', 'cannot reach git at forge.invalid',
+    [ 'a croak whose message says " at " itself',
+      qr/cannot reach git at forge\.invalid at \S+ line \d+\./,
       sub { croak 'cannot reach git at forge.invalid' } ],
-    [ 'a die', 'no supervisor', sub { die 'no supervisor' } ],
+    [ 'a die', qr/no supervisor at \S+ line \d+\./, sub { die 'no supervisor' } ],
     # Perl then appends ", <$input> line 1." to where it died.
-    [ 'a die with a file handle that was read', 'counter is empty', sub {
-      open my $input, '<', \$read or croak 'cannot read';
-      my $line = <$input>;
-      die 'counter is empty';
-    } ],
-    [ 'a backtrace', 'deep failure', sub { confess 'deep failure' } ],
-    [ 'a message that ends in a newline', 'look at this, in line 5 of it',
-      sub { die "look at this, in line 5 of it\n" } ]
+    [ 'a die with a file handle that was read',
+      qr/counter is empty at \S+ line \d+, <\$input> line 1\./, sub {
+        open my $input, '<', \$read or croak 'cannot read';
+        my $line = <$input>;
+        die 'counter is empty';
+      } ],
+    [ 'a backtrace', qr/deep failure at \S+ line \d+\./, sub { confess 'deep failure' } ],
+    [ 'a message that ends in a newline', qr/look at this, in line 5 of it/,
+      sub { die "look at this, in line 5 of it\n" } ],
+    # (I) The end of this message was taken for where it was raised, and cut.
+    [ 'a message that itself ends like a place in a file',
+      qr/cannot read the counter at byte 3 line 7/,
+      sub { die "cannot read the counter at byte 3 line 7\n" } ],
+    # (J) Of this path, what stands before its " at " stayed in the reason.
+    [ 'an installation whose path has " at " in it',
+      qr{boom at /opt/simpici at ci/lib/SimpiCI/Runner\.pm line 5\.},
+      sub { die "boom at /opt/simpici at ci/lib/SimpiCI/Runner.pm line 5.\n" } ]
   );
   for my $case (@raised) {
-    my ( $name, $message, $raise ) = @$case;
+    my ( $name, $said, $raise ) = @$case;
     my $private = tempdir;
     my $private_store = SimpiCI::Store->new(root => $private);
     my $aborting = AbortingWorker->new(host => 'unused', store => $private_store,
@@ -278,9 +290,10 @@ subtest 'where an error was raised is cut off its reason' => sub {
         run => 7, token => 'unused', timeout => 10, event => {}, secrets => {}
       }));
     my $caught = warnings { $aborting->once };
-    my $reason = 'SimpiCI::Worker run 7 aborted: '.$message."\n";
-    is $aborting->requests->[-1]{log}, $reason, $name.' is reported with its message alone';
-    is join('', @$caught), $reason, 'and warned the same way';
+    is $aborting->requests->[-1]{log}, "SimpiCI::Worker run 7 aborted: internal error\n",
+      $name.' is reported as an internal error, with nothing of its message';
+    like join('', @$caught), qr/\ASimpiCI::Worker run 7 aborted: internal error: $said\n\z/,
+      'and warned with all of its first line';
   }
 };
 

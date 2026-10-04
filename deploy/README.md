@@ -476,22 +476,50 @@ A claim the worker cannot execute is reported instead of being left to its
 lease. That is an event the worker refuses, for example a queue entry written
 by hand or by a dispatcher of another version, a secret file or temporary
 directory it cannot create, and a failure of the run supervisor itself. The
-run becomes `failed` with exit code `125`, and its log ends with the reason,
-which the worker also writes to standard error:
+run becomes `failed` with exit code `125`, and its log ends with the reason:
 
 ```text
-SimpiCI::Worker run 7 aborted: SimpiCI::Event clone URL must not contain a password; a user name alone is accepted, and SSH authenticates with a key of the account that runs git
+SimpiCI::Worker run 7 aborted: invalid event in claim
 ```
 
-The reason is the first line of the error, without the file and line of the
-worker installation where it was raised. Assigned secret values are redacted
-from it as from the rest of the log. A path the message itself names stays in
-it: a file the worker could not write under its `--root` is named with that
-directory. The event and the secrets are checked before any secret file is
-written, and `secrets/<run>/` is removed after every outcome the worker
-process lives to see, also when the completion could not be saved. Only a
-claim whose run is not a run number is refused without a report: there is
-nothing to report it under.
+The log is published, so the reason is one of a fixed list and never the
+text of the error. No path below the worker's `--root`, no file or line of
+the worker installation and no value of the claim is in the log for it:
+
+| Reason | What happened |
+| --- | --- |
+| `invalid event in claim` | The event is not one the worker accepts: its commit, ref, clone URL, repository or source is refused by the same rules the dispatcher enqueues by, or a field is missing or of the wrong type. A queue entry written by hand or by another version |
+| `invalid secrets in claim` | The secrets of the claim are not phases with names and values |
+| `invalid secret name in claim`, `invalid secret value in claim` | A secret is not one `NAME=VALUE` line, see [where secret values are kept](#where-secret-values-are-kept-and-for-how-long) |
+| `invalid timeout in claim` | The `timeout` of the dispatcher configuration is not an integer |
+| `cannot write secret files` | `<root>/secrets/<run>/` or a file in it could not be written |
+| `cannot create temporary directory` | `<root>/tmp/<run>/` could not be created |
+| `run supervisor failed` | The supervisor of the run gave up: it could not write a report, the checkout directory or another file below `<root>`, could not start a process, or could not report a run that was stopped. The log has what the run printed up to then |
+| `internal error` | Anything else |
+
+Nothing is executed for the first five, and no secret file is written. What
+the error said is in the journal of the worker, in the same line after the
+reason, with the file it is about and where it was raised:
+
+```text
+SimpiCI::Worker run 7 aborted: invalid event in claim: SimpiCI::Event clone URL must not contain a password; a user name alone is accepted, and SSH authenticates with a key of the account that runs git at /usr/local/share/perl/5.40.1/SimpiCI/Worker.pm line N.
+SimpiCI::Worker run 7 aborted: run supervisor failed: SimpiCI::Store->write_json cannot publish /var/lib/simpici-worker/public/runs/7.json: Read-only file system at /usr/local/share/perl/5.40.1/SimpiCI/Runner.pm line N.
+```
+
+Assigned secret values are redacted from that line as from the log. The
+journal is the operator's and is not published: its lines name files below
+`--root` and the installation, one line for one event. `secrets/<run>/` is
+removed after every outcome the worker process lives to see, also when the
+completion could not be saved. Only a claim whose run is not a run number is
+refused without a report: there is nothing to report it under.
+
+A command of a run that cannot be started, because the worker has no `git`
+or its `--executor` is no executable file, is not an aborted claim but a
+`failed` run with exit code `126`. Its log ends with
+`SimpiCI::Runner cannot start git: <reason>` or
+`SimpiCI::Runner cannot start the executor: <reason>`, and the journal has
+the same line with the path of the command. A local `simpicid` and `simpici`
+do the same.
 
 A run whose checkout or executor is ended by a signal, for example by the
 kernel's out-of-memory killer, is reported as `signalled`, with the signal
@@ -1018,6 +1046,15 @@ file lives separately at `public/index.html` in the repository. Local native
 logs are **unfiltered**; review their contents before publishing. The viewer
 output is not yet a comprehensively hardened public dashboard either.
 Review metadata escaping before exposing it publicly.
+
+A log is what git and the executor printed. SimpiCI itself adds three kinds
+of lines to it, none of which names the state root, a file or line of the
+installation or a value: that a run was stopped by a signal, that a command
+could not be started, and, behind a dispatcher, that
+[a claim was aborted](#recovery-and-limits) or that the log was withheld.
+The checkout is made quietly for the same reason. What the tools print is
+not looked at: `git fetch` names the clone URL of the event, and an error of
+git, of the container runtime or of a job can name a path of the host.
 
 For a local view without Compose, use Python 3 under the same user that has
 permission to read the reports. From the SimpiCI checkout, with existing

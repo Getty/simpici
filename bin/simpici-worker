@@ -28,7 +28,10 @@ my $worker = SimpiCI::Worker->new(
     $executor ? (runner_script => path($executor)) : ())
 );
 while (1) {
-  eval { $worker->once; 1 } or warn 'simpici-worker: '.$@;
+  # One line for a cycle that failed: what follows the first line of an
+  # error is a backtrace, with the arguments of every call in it.
+  eval { $worker->once; 1 }
+    or warn 'simpici-worker: '.( ( split /\n/, $@ )[0] // 'unknown error' )."\n";
   last if $once;
   sleep 10;
 }
@@ -76,15 +79,34 @@ success; see L<SimpiCI::Runner/run>.
 
 A claim the worker cannot execute, such as an event it refuses, is reported
 to the dispatcher as a failed run with exit code 125. The reason is the last
-line of the uploaded log and is also written to standard error, without the
-file and line where the error was raised:
+line of the uploaded log:
 
-  SimpiCI::Worker run 7 aborted: SimpiCI::Event ref must start with refs/
+  SimpiCI::Worker run 7 aborted: invalid event in claim
+
+The log is published, so the reason is one of a list of fixed phrases and
+never what the error said: C<invalid event in claim>,
+C<invalid secrets in claim>, C<invalid secret name in claim>,
+C<invalid secret value in claim>, C<invalid timeout in claim>,
+C<cannot write secret files>, C<cannot create temporary directory>,
+C<run supervisor failed> and, for everything else, C<internal error>.
+L<SimpiCI::Worker/abort_reasons> says what each stands for. No path below
+C<--root>, no file or line of the installation and no value of the claim is
+in the log for it. What the error said is written to standard error, after
+the same line:
+
+  SimpiCI::Worker run 7 aborted: invalid event in claim: SimpiCI::Event ref must start with refs/ at ...
+  SimpiCI::Worker run 7 aborted: run supervisor failed: SimpiCI::Store->write_json cannot publish /var/lib/simpici-worker/public/runs/7.json: Read-only file system at ...
 
 A claim whose secrets are not one C<NAME=VALUE> line each is refused the same
 way, with C<invalid secret name in claim> or C<invalid secret value in claim>
 as the reason: an undefined or empty value, a reference, a value with a line
 end, a name that is no C<CICD_E<lt>NAMEE<gt>> or C<E<lt>NAMEE<gt>_TOKEN>.
+
+Standard error is the log of the operator: it names files below C<--root>
+and where in the installation an error was raised, and it has one line for
+one event. A cycle that failed is the first line of its error after
+C<simpici-worker: >, as in the examples above and below; the other lines
+begin with the class that says them.
 
 No secret file is written for a refused claim, and the secret files of a run
 are removed whichever way it ends, as long as the worker lives to do it. A

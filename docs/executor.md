@@ -69,11 +69,14 @@ The existing registry handoff also uses `CICD_REGISTRY`,
 Credentials belong at a trusted entry point, not in the candidate checkout.
 The distributed worker also materializes dispatcher grants as private secret
 files, only for an event it accepts and only until the run ends; a claim it
-cannot execute is reported as `failed` with exit code `125`. It writes each
-secret as one `NAME=VALUE` line of `publish.env` or `deploy.env` and refuses,
-in the same way, a claim with a secret that is not one: an undefined or empty
-value, a structure, a value with a line end, a name other than `CICD_<NAME>`
-or `<NAME>_TOKEN`. The files of a worker that was killed during a run are
+cannot execute is reported as `failed` with exit code `125` and one of a
+fixed list of reasons, see
+[Limits of output, logs and reports](#limits-of-output-logs-and-reports). It
+writes each secret as one `NAME=VALUE` line of `publish.env` or `deploy.env`
+and refuses, in the same way, a claim with a secret that is not one: an
+undefined or empty value, a structure, a value with a line end, a name other
+than `CICD_<NAME>` or `<NAME>_TOKEN`. The files of a worker that was killed
+during a run are
 removed when the worker starts again, and so are the log, the checkout and
 the temporary files of that run. See
 [Operations](../deploy/README.md#where-secret-values-are-kept-and-for-how-long).
@@ -295,6 +298,26 @@ the complete plan.
   the worker to the dispatcher.
 - Native local logs are written unfiltered and kept. Removing private fields
   from a report JSON is not log redaction.
+- A log is the output of git and of the executor. The lines the native
+  runner, the worker and the dispatcher add to it are fixed phrases that name
+  no path of the state root, no file or line of the installation and no
+  value: `SimpiCI::Runner run <run> stopped by signal <signal>`,
+  `SimpiCI::Runner cannot start git: <reason>` or `cannot start the
+  executor: <reason>` for a command that could not be started (exit `126`),
+  `SimpiCI::Worker run <run> aborted: <reason>` and
+  `SimpiCI::Dispatcher log of run <run> withheld: ...`. The checkout is made
+  with `git init --quiet`, which would otherwise print its path. What the
+  tools themselves print is not looked at: `git fetch` names the clone URL,
+  and an error of git, of the container runtime or of a job can name a path
+  of the host.
+- The reason of an aborted claim is one of `invalid event in claim`,
+  `invalid secrets in claim`, `invalid secret name in claim`,
+  `invalid secret value in claim`, `invalid timeout in claim`,
+  `cannot write secret files`, `cannot create temporary directory`,
+  `run supervisor failed` and `internal error`, never the text of the error.
+  That text, with the file it is about and where it was raised, is written
+  to standard error of the worker and nowhere else. See
+  [Operations](../deploy/README.md#recovery-and-limits).
 - Worker and dispatcher redact assigned secret values with one function:
   every literal occurrence of every value of the claim, so that nothing is
   left where one value begins another or two of them overlap. This does not

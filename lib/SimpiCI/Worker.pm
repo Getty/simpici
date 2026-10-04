@@ -12,7 +12,7 @@ use Path::Tiny qw( path );
 use SimpiCI::Event;
 use SimpiCI::Runner;
 use SimpiCI::Store;
-use Types::Standard qw( Str InstanceOf );
+use Types::Standard qw( Int Str InstanceOf );
 use namespace::autoclean;
 
 has host => (is => 'ro', isa => Str, required => 1);
@@ -59,7 +59,7 @@ sub once {
   my @kept;
   for my $remove (qw( remove_orphaned_containers remove_orphaned_secrets
       remove_orphaned_run_files )) {
-    eval { $self->$remove; 1 } or push @kept, $self->_abort_reason($@);
+    eval { $self->$remove; 1 } or push @kept, $self->_message($@);
   }
   croak join('; ', @kept) if @kept;
   my $pending = $self->_pending;
@@ -87,15 +87,17 @@ sub once {
   if (defined $stopped) {
     # The completion waits for the next start. What else is to be said is
     # said now: the signal ends the worker, unless the caller holds it back.
-    warn $self->_abort_reason($kept)."\n" if defined $kept;
+    warn $self->_message($kept)."\n" if defined $kept;
     warn __PACKAGE__.' cannot save the completion of run '.$claim->{run}.': '
-      .$self->_abort_reason($error)."\n" unless $request;
+      .$self->_message($error)."\n" unless $request;
     $self->runner->end_by($stopped);
     return;
   }
-  croak $self->_abort_reason($kept) if defined $kept;
-  croak __PACKAGE__.' cannot save the completion of run '.$claim->{run}.': '.$error
-    unless $request;
+  croak $self->_message($kept) if defined $kept;
+  # One line, as everything the worker says on standard error: the error
+  # ends with where it was raised, and croak adds where once was called.
+  croak __PACKAGE__.' cannot save the completion of run '.$claim->{run}.': '
+    .$self->_message($error) unless $request;
   return $self->_deliver($request);
 }
 
@@ -201,7 +203,7 @@ sub remove_orphaned_containers {
   my ( $self ) = @_;
   my $removed;
   eval { $removed = $self->runner->remove_orphaned_containers; 1 }
-    or croak __PACKAGE__.' cannot remove orphaned containers: '.$self->_abort_reason($@);
+    or croak __PACKAGE__.' cannot remove orphaned containers: '.$self->_message($@);
   warn __PACKAGE__.' removed orphaned containers: '.$removed."\n" if $removed;
   return $removed;
 }
@@ -275,18 +277,21 @@ sub _remove_run_entry {
 # worker: the dispatcher would otherwise hear nothing until the lease expires.
 sub _completion {
   my ( $self, $claim, $secrets_root, $stop ) = @_;
-  my ( $report, $error );
-  eval { $report = $self->_run_claim($claim, $secrets_root, $stop); 1 }
-    or $error = $@ || 'unknown error';
+  my ( $report, $reason, $error );
+  eval { ( $report, $reason, $error ) = $self->_run_claim($claim, $secrets_root, $stop); 1 }
+    or ( $report, $reason, $error ) = ( undef, undef, $@ || 'unknown error' );
   my $log_path = $self->store->root->child('public', 'runs', $claim->{run}.'.log');
   my $log = $log_path->is_file ? $log_path->slurp_utf8 : '';
   unless ($report) {
     $report = { state => 'failed', exit_code => $self->aborted_exit_code };
-    my $reason = $self->redact(__PACKAGE__.' run '.$claim->{run}.' aborted: '
-      .$self->_abort_reason($error)."\n", $claim->{secrets});
-    warn $reason;
+    # The log is published and gets the reason, which is one of a list. What
+    # the error said names files of this worker and is for whoever reads its
+    # standard error, with the secret values of the claim redacted.
+    my $aborted = __PACKAGE__.' run '.$claim->{run}.' aborted: '.$self->abort_reason($reason);
+    warn $self->redact($aborted.( defined $error ? ': '.$self->_first_line($error) : '' )."\n",
+      $claim->{secrets});
     $log .= "\n" if length $log && $log !~ /\n\z/;
-    $log .= $reason;
+    $log .= $aborted."\n";
   }
   $log = substr($self->redact($log, $claim->{secrets}), -4 * 1024 * 1024);
   my $request = {
@@ -298,59 +303,110 @@ sub _completion {
   return $request;
 }
 
-# What an error says, without where it was raised. Only the first line: a
-# backtrace below it would carry arguments. And without the " at FILE line N"
-# that croak, die and a type error end it with: the log is public, the file is
-# one of the installation. The greedy start keeps an " at " of the message
-# itself.
-sub _abort_reason {
-  my ( $self, $error ) = @_;
-  my $reason = (split /\n/, $error)[0] // 'unknown error';
-  $reason =~ s/\A(.*) at .+? line \d+(?:, <.*> (?:line|chunk) \d+)?\.?\z/$1/;
-  return $reason;
+# Every reason the log gives for a claim that was not executed to its end.
+# The log is published: it gets one of these as it stands here and nothing of
+# what an error said, so that no path, no file of the installation and no
+# value of the claim can be in it. The last one is for everything that is none
+# of the others.
+sub abort_reasons {
+  return (
+    'invalid event in claim',
+    'invalid secrets in claim',
+    'invalid secret name in claim',
+    'invalid secret value in claim',
+    'invalid timeout in claim',
+    'cannot write secret files',
+    'cannot create temporary directory',
+    'run supervisor failed',
+    'internal error'
+  );
 }
 
+# What is published for a reason: itself if it is one of the list, the last
+# one of the list for whatever else it may be.
+sub abort_reason {
+  my ( $self, $reason ) = @_;
+  my @reasons = $self->abort_reasons;
+  return $reasons[-1] unless defined $reason && !ref $reason;
+  return ( grep { $_ eq $reason } @reasons )[0] // $reasons[-1];
+}
+
+# What an error says, in one line: a backtrace below it would carry
+# arguments. For standard error, which has one line for one event.
+sub _first_line {
+  my ( $self, $error ) = @_;
+  return ( split /\n/, $error // '' )[0] // 'unknown error';
+}
+
+# The same without the " at FILE line N" that croak, die and a type error
+# end it with, for an error that is raised again and gets its own. The greedy
+# start keeps an " at " of the message itself, and a message that ends like
+# that is cut short. Nothing that is published is made with it.
+sub _message {
+  my ( $self, $error ) = @_;
+  my $message = $self->_first_line($error);
+  $message =~ s/\A(.*) at .+? line \d+(?:, <.*> (?:line|chunk) \d+)?\.?\z/$1/;
+  return $message;
+}
+
+# Returns the report of the run. For a claim that is not executed to its end
+# it returns nothing in its place, then the reason, one of abort_reasons, and
+# what the error said if there was one. Only the reason is published.
 sub _run_claim {
   my ( $self, $claim, $secrets_root, $stop ) = @_;
   # The event is built first: one this worker refuses gets no secret written.
-  # Its fields need their types before that, because a type error would quote
-  # what it found in their place, and the reason is published.
   my $fields = $claim->{event};
-  croak __PACKAGE__.' invalid event in claim' unless ref $fields eq 'HASH'
+  return ( undef, 'invalid event in claim' ) unless ref $fields eq 'HASH'
     && ref($fields->{payload} // {}) eq 'HASH'
     && !grep { !defined || ref } $fields->@{qw( source event repository clone_url ref commit )};
-  my $event = SimpiCI::Event->new(%$fields);
+  my $event;
+  eval { $event = SimpiCI::Event->new(%$fields); 1 }
+    or return ( undef, 'invalid event in claim', $@ );
   my $secrets = $claim->{secrets} // {};
-  croak __PACKAGE__.' invalid secrets in claim'
+  return ( undef, 'invalid secrets in claim' )
     unless ref $secrets eq 'HASH' && !grep { ref $_ ne 'HASH' } values %$secrets;
   # Each secret becomes one NAME=VALUE line of an environment file. Whatever
   # is not one such line is refused before a file is written, and without
   # being quoted: an undefined value would be written as an empty one, a
   # reference as its address, a line end would begin a variable of its own.
   for my $values (values %$secrets) {
-    croak __PACKAGE__.' invalid secret name in claim'
+    return ( undef, 'invalid secret name in claim' )
       if grep { !$self->secret_name_valid($_) } keys %$values;
-    croak __PACKAGE__.' invalid secret value in claim'
+    return ( undef, 'invalid secret value in claim' )
       if grep { !$self->secret_value_valid($_) } values %$values;
   }
+  # What the runner accepts as its limit, asked before a secret is written.
+  return ( undef, 'invalid timeout in claim' ) unless Int->check($claim->{timeout});
+  eval { $self->_write_secrets($secrets_root, $secrets); 1 }
+    or return ( undef, 'cannot write secret files', $@ );
+  # A directory of the run, so that what the executor keeps there goes with it.
+  my $temporary = $self->store->root->absolute->child('tmp', $claim->{run});
+  eval { $temporary->mkpath; 1 } or return ( undef, 'cannot create temporary directory', $@ );
+  local $ENV{RUNNER_TEMP} = $temporary->stringify;
+  local $ENV{SIMPICI_SECRETS_DIR} = $secrets_root->stringify;
+  # A runner of the class the worker was given: the same signals end it, and
+  # its containers are found by the same store. The signals themselves are
+  # held back by once, so the runner is told where to ask for them.
+  my $report;
+  eval {
+    $report = ( ref $self->runner )->new(
+      store => $self->store, runner_script => $self->runner->runner_script,
+      timeout => $claim->{timeout}, $stop ? ( stop_requested => $stop ) : ()
+    )->run($event, $claim->{run});
+    1;
+  } or return ( undef, 'run supervisor failed', $@ );
+  return $report;
+}
+
+sub _write_secrets {
+  my ( $self, $secrets_root, $secrets ) = @_;
   $secrets_root->mkpath;
   for my $phase (qw( publish deploy )) {
     my $values = $secrets->{$phase} // {};
     $secrets_root->child($phase.'.env')->spew_utf8(join '',
       map { $_.'='.$values->{$_}."\n" } sort keys %$values);
   }
-  # A directory of the run, so that what the executor keeps there goes with it.
-  my $temporary = $self->store->root->absolute->child('tmp', $claim->{run});
-  $temporary->mkpath;
-  local $ENV{RUNNER_TEMP} = $temporary->stringify;
-  local $ENV{SIMPICI_SECRETS_DIR} = $secrets_root->stringify;
-  # A runner of the class the worker was given: the same signals end it, and
-  # its containers are found by the same store. The signals themselves are
-  # held back by once, so the runner is told where to ask for them.
-  return ( ref $self->runner )->new(
-    store => $self->store, runner_script => $self->runner->runner_script,
-    timeout => $claim->{timeout}, $stop ? ( stop_requested => $stop ) : ()
-  )->run($event, $claim->{run});
+  return;
 }
 
 sub aborted_exit_code { 125 }
@@ -373,20 +429,36 @@ A claim that cannot be executed is completed as a failed run instead of being
 left to its lease: an event L<SimpiCI::Event> refuses, a claim of another
 shape than the dispatcher sends, a secret that is not one line of an
 environment file, secret files that cannot be written, a croak of
-L<SimpiCI::Runner>. The event is built and the secrets are checked before any
-secret file is written.
+L<SimpiCI::Runner>. The event is built and the secrets and the timeout are
+checked before any secret file is written.
 The result is the state C<failed> with L</aborted_exit_code>. The log is what
 the run wrote up to then, followed by the line
 
   SimpiCI::Worker run N aborted: REASON
 
-which C<once> also warns. REASON is the first line of the error, without the
-C< at FILE line N> that C<croak> and C<die> end it with, and with the assigned
-secret values redacted as in the rest of the log. The log is public, so the
-reason does not say where in the installation the error was raised. A path the
-message itself names stays in it, such as the file L<SimpiCI::Store> could not
-publish, and so does the C<source> of a refused event; the other fields of an
-event are refused without being quoted.
+The log is published, so REASON is one of the fixed phrases of
+L</abort_reasons> and nothing of what the error itself said. No reason has a
+path below the store of the worker in it, a file or a line of the
+installation, or a value of the claim, and an error nobody foresaw is
+C<internal error>, whatever its message. What the error said goes to
+standard error and nowhere else: C<once> warns the same line with it,
+
+  SimpiCI::Worker run N aborted: REASON: ERROR
+
+ERROR is the first line of the error as it was raised, with the files it
+names and with the C< at FILE line N> that C<croak> and C<die> end it with,
+and with the assigned secret values redacted as in the log. A reason that
+came of no error, such as C<invalid secret name in claim>, is warned alone.
+
+=head2 What is written to standard error
+
+Standard error is the log of whoever operates the worker, and is not
+published. Its lines name files below the store root and, for an error, the
+file and the line of the installation where it was raised: that is what an
+error is found by. One event is one line. A line that C<once> warns begins
+with the class that says it, C<SimpiCI::Worker> or C<SimpiCI::Runner>. What
+C<once> croaks with is one line as well, the first of the error it passes
+on, and C<simpici-worker> writes it after C<simpici-worker: >.
 
 =head2 Delivering a completion
 
@@ -447,11 +519,8 @@ L<SimpiCI::Role::Secrets/secret_name_valid> accepts and a value
 L<SimpiCI::Role::Secrets/secret_value_valid> accepts. An undefined value, a
 reference, an empty value and a value with a line end are refused, like a name
 that would not be a variable of its own. The reasons are
-
-  SimpiCI::Worker invalid secret name in claim
-  SimpiCI::Worker invalid secret value in claim
-
-and name neither the secret nor its value. The dispatcher grants nothing
+C<invalid secret name in claim> and C<invalid secret value in claim>, which
+name neither the secret nor its value. The dispatcher grants nothing
 else, so such a claim comes from a dispatcher of another version or is not
 what the dispatcher sent.
 
@@ -643,6 +712,74 @@ warned as
 without a value. A link is removed, not followed. Croaks if an entry cannot
 be removed; C<once> then asks for no work, so that the worker does not go on
 beside secret files it could not delete.
+
+=head2 abort_reasons
+
+  my @reasons = SimpiCI::Worker->abort_reasons;
+
+Lists every reason the log gives for a claim that was not executed to its
+end. They are fixed phrases, a few lowercase words each, because the
+dispatcher publishes the log it receives:
+
+=over 4
+
+=item C<invalid event in claim>
+
+The event of the claim is no object with the fields of an event, or
+L<SimpiCI::Event> refuses it for its commit, its ref, its clone URL, its
+repository or its source. Standard error has the rule it broke. The
+dispatcher enqueues only what the same class accepts, so this is a queue
+entry written by hand or by another version.
+
+=item C<invalid secrets in claim>
+
+The secrets of the claim are not an object of phases, each with an object of
+names and values.
+
+=item C<invalid secret name in claim>
+
+=item C<invalid secret value in claim>
+
+A secret is not one C<NAME=VALUE> line, see L</Secrets of a claim>.
+
+=item C<invalid timeout in claim>
+
+The timeout of the claim is no integer. The dispatcher sends the C<timeout>
+of its configuration as it stands there.
+
+=item C<cannot write secret files>
+
+C<secrets/E<lt>runE<gt>/> or one of its two files could not be written.
+
+=item C<cannot create temporary directory>
+
+C<tmp/E<lt>runE<gt>/> could not be created.
+
+=item C<run supervisor failed>
+
+L<SimpiCI::Runner> croaked: it could not write a report, the checkout
+directory or another file below the store root, could not start a process,
+could not read how a command ended, or could not report a run that was
+stopped. The log has what the run wrote up to then.
+
+=item C<internal error>
+
+Everything else, and so every error nobody foresaw.
+
+=back
+
+The first five are checked before a secret file is written, and nothing is
+executed for them. Standard error has the file, the rule or the message
+behind each of the others, see L</What is written to standard error>.
+
+=head2 abort_reason
+
+  my $published = $worker->abort_reason($reason);
+
+Returns the reason as the log gets it: itself if it is one of
+L</abort_reasons>, and C<internal error> for anything else, also for a
+reason that is undefined or no string. Nothing else decides what the log
+says of an aborted claim.
 
 =head2 aborted_exit_code
 

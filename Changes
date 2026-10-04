@@ -68,12 +68,20 @@
     exit code 125 instead of leaving it to its lease: an event it refuses, a
     claim of the wrong shape, secret files it cannot write, a failure of the
     run supervisor. The uploaded log ends with "SimpiCI::Worker run N
-    aborted: <reason>", which is also written to standard error; the reason
-    is the first line of the error without the file and line where it was
-    raised, and assigned secret values are redacted from it. The event is checked before any
-    secret file is written, and secrets/<run>/ is removed whichever way the
-    run ends. A claim whose run is not a run number is refused before
+    aborted: <reason>", where the reason is one of nine fixed ones
+    (SimpiCI::Worker->abort_reasons): no path below the worker root, no file
+    or line of the installation and no value of the claim is published. The
+    error itself is written to standard error of the worker, in the same
+    line, with assigned secret values redacted. The event and the timeout
+    are checked before any secret file is written, so a claim without an
+    integer timeout is refused first, and secrets/<run>/ is removed whichever
+    way the run ends. A claim whose run is not a run number is refused before
     anything is written.
+  - The runner makes the checkout quietly, so that a log no longer begins
+    with the path of the state root, and a command that cannot be started is
+    logged as "SimpiCI::Runner cannot start git" or "cannot start the
+    executor" instead of a Perl warning with the path of the installation.
+    One event is one line on standard error of simpici-worker.
   - Worker and dispatcher redact with one function (SimpiCI::Role::Secrets):
     every occurrence of every assigned value, also where one value begins
     another or two overlap; empty values do not break it. The dispatcher

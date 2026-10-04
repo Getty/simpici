@@ -135,9 +135,12 @@ sub _run {
   $workspace->mkpath;
   my $git = sub {
     my ( $timeout, @arguments ) = @_;
-    return $self->_execute(log => $log, timeout => $timeout, command => [ 'git', @arguments ]);
+    return $self->_execute(log => $log, timeout => $timeout, name => 'git',
+      command => [ 'git', @arguments ]);
   };
-  my $result = $git->(120, 'init', $workspace->stringify);
+  # Quietly: git would say where it made the repository, and the log of a
+  # run is published.
+  my $result = $git->(120, 'init', '--quiet', $workspace->stringify);
   # The event accepts a clone URL that begins with "-"; its commit, being an
   # object id, cannot.
   $result = $git->(120, '-C', $workspace->stringify,
@@ -171,7 +174,7 @@ sub _run {
     $containers->spew_utf8($self->container_label($run)."\n");
     $result = $self->_execute(log => $log, timeout => $self->timeout, run => $run,
       environment => { %ENV, %environment }, directory => $workspace->stringify,
-      command => [ $self->runner_script->stringify ]);
+      name => 'the executor', command => [ $self->runner_script->stringify ]);
     $self->_settle_containers($run, $result);
   }
   my $finished = time;
@@ -254,9 +257,21 @@ sub _execute {
     close $gate;
     chdir $arg{directory} if defined $arg{directory};
     %ENV = $arg{environment}->%* if defined $arg{environment};
+    # Kept for a command that cannot be started, if there is one to keep. A
+    # command that can be started closes it: Perl opens it to be closed on
+    # exec.
+    my $operator;
+    open $operator, '>&', \*STDERR or undef $operator;
     open STDOUT, '>>', $arg{log} or POSIX::_exit(126);
     open STDERR, '>&', STDOUT or POSIX::_exit(126);
-    exec { $command[0] } @command or POSIX::_exit(126);
+    # Not the warning of Perl, which would go to the log and name the
+    # command and this file: the log is published and gets what was to be
+    # started, standard error of the supervisor gets the command.
+    { no warnings 'exec'; exec { $command[0] } @command; }
+    my $reason = $!;
+    syswrite STDERR, __PACKAGE__.' cannot start '.( $arg{name} // 'a command' ).': '.$reason."\n";
+    syswrite $operator, __PACKAGE__.' cannot start '.$command[0].': '.$reason."\n" if $operator;
+    POSIX::_exit(126);
   }
   # From this side as well: the watcher joins the group, and a signal for
   # the group must not arrive before there is one.
@@ -536,8 +551,23 @@ SimpiCI::Runner - exact-checkout SimpiCI run supervisor
 Makes one run: an exact detached checkout, then the shared executor, with a
 published report at the beginning and at the end. Whatever ends a run before
 its executor is over also ends the process group of the executor and
-removes the containers it started; that is what the two sections below
-describe. The methods follow them.
+removes the containers it started; that is what L</Ending a run> and
+L</Containers of a run> describe. The methods follow them.
+
+=head2 The log of a run
+
+C<public/runs/E<lt>runE<gt>.log> below the store root is what the commands
+of a run printed, standard output and standard error together and
+unfiltered. It is published: by a local C<simpicid> as it stands, by a
+worker through its dispatcher. The runner adds two lines of its own to it,
+that a run was stopped and that a command could not be started, see L</run>
+and L</Ending a run>. Neither names the store root, a file of the
+installation or a line of one, and the checkout is initialised quietly for
+the same reason: git would say where it made the repository.
+
+What git and the executor print otherwise is not looked at. git names the
+clone URL of the event when it fetches, and an error of a tool or of a job
+may name a path of the host.
 
 =head2 Ending a run
 
@@ -672,6 +702,19 @@ ends the run, and how it ended is the result of the run:
 An exit code is the C<exit_code> of the report. From the executor, 0 is the
 state C<success> and 78 is C<skipped>; every other exit code, and every exit
 code but 0 of a git command, is C<failed>.
+
+=item *
+
+A command that cannot be started, because there is no C<git> in C<PATH> or
+the executor is no file that can be executed, counts as one that exited
+with 126, and so as C<failed>. The log gets one line for it, with the reason
+the system gave,
+
+  SimpiCI::Runner cannot start the executor: No such file or directory
+
+or C<cannot start git>. Standard error of the supervisor gets the same line
+with the path of the command in the place of C<the executor>, which the log
+does not name.
 
 =item *
 

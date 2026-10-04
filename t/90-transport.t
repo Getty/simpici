@@ -73,12 +73,13 @@ $store->write_json('queue/2.json', {
 my $program = path('bin/simpici-worker')->absolute;
 my $output = qx{"$ENV{TEST_PERL}" -I"$ENV{TEST_LIB}" "$program" --dispatcher test-host --root "@{[ $worker_store->root ]}" --once 2>&1};
 is $? >> 8, 0, 'simpici-worker survives a claim it refuses';
-like $output, qr/SimpiCI::Worker run 2 aborted: SimpiCI::Event clone URL must not contain a password/,
-  'and names the run and the reason on standard error';
+like $output,
+  qr/\ASimpiCI::Worker run 2 aborted: invalid event in claim: SimpiCI::Event clone URL must not contain a password[^\n]* runs git at [^\n]+\n\z/,
+  'and names the run, the reason and what the event was refused for in one line on standard error';
 unlike $output, qr/transport-secret-value|hunter2-in-url/, 'without the secret or the URL';
-# Where the error was raised is no part of the reason: the log is public.
+# What the error said, and where it was raised, is no part of the reason:
+# the log is public.
 my $private_path = qr/ line \d+|\.pm\b|\Q$ENV{TEST_LIB}\E|\Q@{[ $worker_store->root ]}\E/;
-unlike $output, $private_path, 'or a file of the installation or of the worker store';
 like $responses->slurp_utf8, qr/"PUBLISH_TOKEN":"transport-secret-value"/,
   'the claim did carry the secret';
 is [ $store->root->child('claims')->children ], [],
@@ -87,9 +88,9 @@ ok !$worker_store->root->child('secrets')->exists, 'no secret file is written on
 my $report = JSON::MaybeXS->new->decode($store->root->child('public/runs/2.json')->slurp_utf8);
 is [ $report->@{qw( state exit_code )} ], [ 'failed', 125 ],
   'the dispatcher records a failed run instead of an expiring lease';
-like $store->root->child('public/runs/2.log')->slurp_utf8,
-  qr/\ASimpiCI::Worker run 2 aborted: SimpiCI::Event clone URL must not contain a password[^\n]* runs git\n\z/,
-  'with the reason as its log, which ends where the message of the event ends';
+is $store->root->child('public/runs/2.log')->slurp_utf8,
+  "SimpiCI::Worker run 2 aborted: invalid event in claim\n",
+  'with the reason as its log, which is one of a list and nothing the error said';
 unlike $store->root->child('public/runs/2.log')->slurp_utf8, $private_path,
   'and names no file of the installation or of the worker store';
 unlike $store->root->child('public/runs/2.log')->slurp_utf8,
@@ -200,6 +201,20 @@ subtest 'a dispatcher that cannot be asked' => sub {
   is length $store->root->child('public/runs/5.log')->slurp_utf8, 2 * 1024 * 1024,
     'and its whole log';
   is [ map { $_->basename } $rejected->children ], ['3.json'], 'nothing more was put aside';
+};
+
+subtest 'a cycle that fails' => sub {
+  # Standard error is the log of the operator: it names the file, and it
+  # has one line for one event.
+  is $queue->run(SimpiCI::Event->new(source => 'git-poll', event => 'push', repository => 'fixture',
+    clone_url => '/fixture', ref => 'refs/heads/main', commit => 'f' x 40))->{run}, 6, 'run 6 is queued';
+  $pending->mkpath;
+  my ( $status, $output ) = worker_once();
+  is $status, 0, 'does not fail simpici-worker';
+  like $output,
+    qr/\Asimpici-worker: SimpiCI::Worker cannot save the completion of run 6: SimpiCI::Store->write_json cannot publish \Q$pending\E: [^\n]+ at [^\n]+ line \d+\.\n\z/,
+    'is one line on standard error, with the file that could not be written';
+  $pending->remove_tree;
 };
 
 done_testing;
