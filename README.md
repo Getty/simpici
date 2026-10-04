@@ -394,13 +394,16 @@ perl -Ilib bin/simpicid --config simpici.json
 - `refs` is the **polling filter**, not global authorization for other entry
   points such as the one-shot CLI.
 - `timeout` limits the native executor's runtime.
+- `ls_remote_timeout` is a separate, optional limit for reading the refs of
+  one repository; it defaults to 60 seconds.
 - Polling remembers the last observed tip of each ref. In local mode, a change
   from `A → B → A` can build the same commit again; the dispatcher queue
   provides durable repository/ref/commit deduplication.
 - `--once` ends a polling cycle. Its exit code does not replace the build
   status in the run report.
-- A repository whose refs cannot be read is logged and skipped until the next
-  cycle; the other repositories are still polled. `--once` then exits with 1.
+- A repository whose refs cannot be read, or are not read within
+  `ls_remote_timeout`, is logged and skipped until the next cycle; the other
+  repositories are still polled. `--once` then exits with 1.
   The same holds for a repository that returns no refs while tips are recorded
   for it: the recorded tips are kept.
 

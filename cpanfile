@@ -5,6 +5,7 @@ requires 'Moo';
 requires 'namespace::autoclean';
 requires 'Path::Tiny';
 requires 'Pod::Usage';
+requires 'Types::Common::Numeric';
 requires 'Types::Standard';
 
 on test => sub {

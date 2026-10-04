@@ -92,6 +92,25 @@ that is valid today. Important details:
 - An unreadable repository keeps its recorded tips, so its return alone
   builds nothing. A repository that has never been read has no baseline yet:
   its first successful poll is the initial one, and `build_initial` decides.
+- `ls_remote_timeout` limits how long the refs of one repository are waited
+  for, in seconds; it is optional and defaults to 60. A remote that neither
+  answers nor fails within it counts as unreadable for this cycle, with the
+  limit in the line:
+
+  ```text
+  simpicid: repository acme/example (ssh://forge.example/acme/example.git) not polled: SimpiCI::Source::GitPoll git ls-remote timed out after 60 s
+  ```
+
+  The query and the helpers git started for it (`ssh`, `git-remote-https`,
+  credential helpers) are ended as one process group, with `TERM` and a
+  second later `KILL`. The limit applies to each repository on its own: a
+  cycle can take that long for every repository that hangs, before `interval`
+  starts. It is not `timeout`, which limits a run. A value that is not a
+  positive integer ends the daemon at its first cycle instead of polling
+  without a limit.
+- The query cannot ask for anything: its standard input is `/dev/null`, and a
+  helper that prompts on the terminal `simpicid` was started from is stopped
+  and runs into the limit. Credentials have to be available without a prompt.
 - A repository that answers, but with none of the configured refs, is not
   polled either while tips are recorded for it. `git ls-remote` reports this
   as success with empty output; a mirror does it before its synchronisation.
@@ -114,8 +133,7 @@ that is valid today. Important details:
   those and treats them as new if they come back.
 - Only reading the refs is tolerated. A run that cannot be started, an
   unwritable state root or queue, and an unusable grant end the daemon as
-  before. The ref query has no timeout: a remote that neither answers nor
-  fails holds up the cycle for all repositories.
+  before.
 - Local polling remembers ref tips. Persistent tuple deduplication is only
   available with the queue in dispatcher mode.
 

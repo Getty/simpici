@@ -56,7 +56,9 @@ sub run {
       my $poller = SimpiCI::Source::GitPoll->new(
         store      => $store,
         runner     => $runner,
-        repository => $repository
+        repository => $repository,
+        defined $config->{ls_remote_timeout}
+          ? ( ls_remote_timeout => $config->{ls_remote_timeout} ) : ()
       );
       # Only the observation is survivable: a remote that is unreadable or
       # returns no refs changes no state, and the next cycle reads it again. A
@@ -137,10 +139,21 @@ root; the empty answer then becomes the baseline. A repository without
 recorded tips is not reported: its empty answer is that baseline, and refs
 that appear afterwards are built.
 
+A repository that does not answer is given up after C<ls_remote_timeout>
+seconds, a top-level setting of the configuration that defaults to 60. It is
+then not polled in this cycle either, and the line names the limit:
+
+  simpicid: repository owner/project (ssh://example/owner/project.git) not polled: ... git ls-remote timed out after 60 s
+
+If set, it must be a positive integer; any other value ends the daemon before
+the first repository is read. It limits each C<git ls-remote> on its own, so
+a cycle can take that long for every repository that hangs, and it is not the
+C<timeout> setting, which limits a run. See
+L<SimpiCI::Source::GitPoll/observe> for how the command is ended.
+
 Nothing beyond the observation is covered: a run that cannot be
 started, an unwritable queue or state root, and an unusable grant still end
-the daemon. C<git ls-remote> runs without a timeout, so a remote that hangs
-holds up the whole cycle.
+the daemon.
 
 =head1 METHODS
 
@@ -178,8 +191,9 @@ Required JSON configuration. See C<etc/simpici.example.json>.
 Poll every configured repository once and exit instead of sleeping. A normally
 completed poll returns zero even if a local build failed; inspect the run
 reports for build status. The exit status is 1 if the refs of a repository
-could not be read, or if it returned none while tips are recorded for it; the
-other repositories are polled all the same.
+could not be read, be it that the query failed or that it ran into
+C<ls_remote_timeout>, or if it returned none while tips are recorded for it;
+the other repositories are polled all the same.
 
 =item B<--runner> I<file>
 

@@ -13,6 +13,12 @@
     are not built as new. simpicid --once polls every repository and exits
     with 1 if one was not polled. SimpiCI::Source::GitPoll offers observe and
     rejection; poll accepts an observation.
+  - simpicid gives up on a repository whose refs are not read within
+    ls_remote_timeout seconds (new top-level setting, default 60), logs it as
+    not polled and goes on with the next one. git ls-remote runs in its own
+    process group that is ended together with its helpers, and it does not
+    answer prompts on the terminal. A remote that prints a lot on standard
+    error does not block the poller.
   - Dispatch durable leased jobs to outbound SSH workers, with fenced recovery
     and idempotent completion upload through a restricted worker protocol.
   - Scope dispatcher secret files to repositories, refs, events and publish or

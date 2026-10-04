@@ -9,10 +9,12 @@ use Digest::SHA qw( sha256_hex );
 use SimpiCI::Runner;
 use SimpiCI::Store;
 use Carp qw( croak );
-use IPC::Open3 qw( open3 );
+use IO::Select;
 use JSON::MaybeXS;
 use Path::Tiny qw( path );
-use Symbol qw( gensym );
+use POSIX qw( WNOHANG setpgid );
+use Time::HiRes qw( sleep time );
+use Types::Common::Numeric qw( PositiveInt );
 use Types::Standard qw( HashRef InstanceOf Object );
 use namespace::autoclean;
 
@@ -32,6 +34,12 @@ has repository => (
   is       => 'ro',
   isa      => HashRef,
   required => 1,
+);
+
+has ls_remote_timeout => (
+  is      => 'ro',
+  isa     => PositiveInt,
+  default => sub { 60 },
 );
 
 sub poll {
@@ -95,16 +103,14 @@ sub observe {
   my ( $self ) = @_;
 
   my $repository = $self->repository;
-  my @refs = $repository->{refs}->@*;
-  my $stderr = gensym;
-  my $pid = open3(undef, my $stdout, $stderr,
-    'git', 'ls-remote', '--', $repository->{clone_url}, @refs);
-  my $output = do { local $/; <$stdout> // '' };
-  my $error = do { local $/; <$stderr> // '' };
-  waitpid($pid, 0);
-  croak __PACKAGE__.' git ls-remote failed: '.$error if $? != 0;
+  my $limit = $self->ls_remote_timeout;
+  my $result = $self->_capture($limit,
+    'git', 'ls-remote', '--', $repository->{clone_url}, $repository->{refs}->@*);
+  croak __PACKAGE__.' git ls-remote timed out after '.$limit.' s'
+    .( length $result->{stderr} ? ': '.$result->{stderr} : '' ) if $result->{timed_out};
+  croak __PACKAGE__.' git ls-remote failed: '.$result->{stderr} if $result->{status} != 0;
   my %observed;
-  for my $line (split /\n/, $output) {
+  for my $line (split /\n/, $result->{stdout}) {
     my ( $commit, $ref ) = split /\s+/, $line, 2;
     next unless defined $ref && $commit =~ /\A[0-9a-f]{40}(?:[0-9a-f]{24})?\z/;
     if ($ref =~ s/\^\{\}\z//) {
@@ -114,6 +120,65 @@ sub observe {
     }
   }
   return \%observed;
+}
+
+sub _capture {
+  my ( $self, $timeout, @command ) = @_;
+
+  pipe(my $stdout, my $stdout_writer) or croak __PACKAGE__.' cannot create a pipe: '.$!;
+  pipe(my $stderr, my $stderr_writer) or croak __PACKAGE__.' cannot create a pipe: '.$!;
+  my $pid = fork;
+  croak __PACKAGE__.' cannot fork: '.$! unless defined $pid;
+  unless ($pid) {
+    # A process group of its own, as SimpiCI::Runner gives a run: the limit
+    # has to reach the helpers git starts, not only git.
+    setpgid(0, 0);
+    open STDIN, '<', '/dev/null' or POSIX::_exit(126);
+    open STDOUT, '>&', $stdout_writer or POSIX::_exit(126);
+    open STDERR, '>&', $stderr_writer or POSIX::_exit(126);
+    { no warnings 'exec'; exec { $command[0] } @command; }
+    print STDERR 'cannot execute '.$command[0].': '.$!."\n";
+    POSIX::_exit(126);
+  }
+  close $stdout_writer;
+  close $stderr_writer;
+
+  # Both pipes are emptied while the command runs, and what ends the wait is
+  # the process, not the end of its output: a helper may outlive it with a
+  # pipe still open.
+  my %captured = ( $stdout => '', $stderr => '' );
+  my $open = IO::Select->new($stdout, $stderr);
+  my $drain = sub {
+    my ( $wait ) = @_;
+    my @ready = $open->can_read($wait);
+    for my $handle (@ready) {
+      my $read = sysread $handle, $captured{$handle}, 65536, length $captured{$handle};
+      next if $read || ( !defined $read && $!{EINTR} );
+      $open->remove($handle);
+    }
+    return scalar @ready;
+  };
+  my $deadline = time + $timeout;
+  my $timed_out;
+  while (waitpid($pid, WNOHANG) == 0) {
+    if (time >= $deadline) {
+      kill 'TERM', -$pid;
+      sleep 1;
+      kill 'KILL', -$pid;
+      waitpid($pid, 0);
+      $timed_out = 1;
+      last;
+    }
+    $open->count ? $drain->(0.05) : sleep 0.05;
+  }
+  my $status = $?;
+  1 while $drain->(0);
+  return {
+    status    => $status,
+    timed_out => $timed_out,
+    stdout    => $captured{$stdout},
+    stderr    => $captured{$stderr}
+  };
 }
 
 1;
@@ -135,6 +200,14 @@ SimpiCI::Source::GitPoll - poll configured Git refs for SimpiCI
     }
   )->poll;
 
+=head1 ATTRIBUTES
+
+=head2 ls_remote_timeout
+
+Seconds L</observe> waits for C<git ls-remote>, a positive integer, 60 by
+default. It has nothing to do with the timeout of a run, which belongs to the
+runner.
+
 =head1 METHODS
 
 =head2 observe
@@ -145,7 +218,19 @@ Reads the configured remote refs once with C<git ls-remote> and returns a hash
 reference of ref names to commit ids. Croaks with the text git printed when
 the remote cannot be read. A remote that answers without a usable ref yields
 an empty hash; whether that is acceptable is for L</rejection> to say. Nothing
-is persisted, and the call has no timeout of its own.
+is persisted.
+
+The command gets L</ls_remote_timeout> seconds, connecting and authenticating
+included. After that its process group receives C<TERM> and, a second later,
+C<KILL>, and the call croaks with the limit and whatever git had printed:
+
+  git ls-remote timed out after 60 s
+
+git runs in a process group of its own, so the transport and credential
+helpers it starts end with it; a helper that leaves the group is not reached,
+but is not waited for either. Standard input is F</dev/null>, and a prompt on
+the controlling terminal is not answered: it stops the helper until the limit
+ends it.
 
 =head2 poll
 
