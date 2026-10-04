@@ -50,18 +50,42 @@ sub run {
     $class->dispatcher_class->new(queue => $runner, config => $config)->validate;
   }
 
+  my $status = 0;
   while (1) {
     for my $repository ($config->{repositories}->@*) {
-      SimpiCI::Source::GitPoll->new(
+      my $poller = SimpiCI::Source::GitPoll->new(
         store      => $store,
         runner     => $runner,
         repository => $repository
-      )->poll;
+      );
+      # Only an unreadable remote is survivable: it changes no state, and the
+      # next cycle reads it again. A failing run or queue still ends the daemon.
+      my $observed = eval { $poller->observe };
+      unless ($observed) {
+        warn $class->unread_message($repository, $@);
+        $status = 1;
+        next;
+      }
+      $poller->poll($observed);
     }
     last if $once;
     sleep($config->{interval} // 60);
   }
-  return 0;
+  return $status;
+}
+
+sub unread_message {
+  my ( $class, $repository, $reason ) = @_;
+
+  # SimpiCI::Event refuses credentials in a URL, but only once a changed ref
+  # is run; an unreadable remote is reported before that.
+  my $configured = $repository->{clone_url} // '';
+  ( my $clone_url = $configured ) =~ s{\A(https?://)[^/]*@}{$1}i;
+  $reason =~ s/\Q$configured\E/$clone_url/g if length $configured;
+  $reason =~ s/\s+/ /g;
+  $reason =~ s/ \z//;
+  return 'simpicid: repository '.( $repository->{name} // '' ).' ('.$clone_url
+    .') not polled: '.$reason."\n";
 }
 
 1;
@@ -87,6 +111,20 @@ polls and exits with a message naming the repository, the secret and the
 reason if one is unusable; it therefore needs read access to the secret files.
 Local mode does not evaluate grants.
 
+A repository whose refs cannot be read does not end the daemon. It writes one
+line to standard error and goes on with the next repository:
+
+  simpicid: repository owner/project (https://example/owner/project.git) not polled: ...
+
+The line carries the text C<git ls-remote> printed and repeats in every cycle
+until the repository is readable again. The recorded tips of that repository
+stay as they are, so nothing is built merely because it is back; a repository
+that was never read gets its first observation then, subject to
+C<build_initial>. Only reading the refs is covered: a run that cannot be
+started, an unwritable queue or state root, and an unusable grant still end
+the daemon. C<git ls-remote> runs without a timeout, so a remote that hangs
+holds up the whole cycle.
+
 =head1 METHODS
 
 =head2 dispatcher_class
@@ -98,7 +136,16 @@ Class used to check the grants in dispatcher mode.
   my $status = SimpiCI::App::Eventd->run(@arguments);
 
 Runs the daemon with an explicit argument list and returns its process exit
-status when C<--once> is used or the loop otherwise ends.
+status when C<--once> is used or the loop otherwise ends: 1 if a repository
+could not be read, 0 otherwise.
+
+=head2 unread_message
+
+  warn SimpiCI::App::Eventd->unread_message($repository, $reason);
+
+Formats the single log line for a repository whose refs could not be read.
+Credentials in an HTTP or HTTPS clone URL are left out, also where the reason
+repeats that URL.
 
 =head1 OPTIONS
 
@@ -112,7 +159,8 @@ Required JSON configuration. See C<etc/simpici.example.json>.
 
 Poll every configured repository once and exit instead of sleeping. A normally
 completed poll returns zero even if a local build failed; inspect the run
-reports for build status.
+reports for build status. The exit status is 1 if the refs of a repository
+could not be read; the other repositories are polled all the same.
 
 =item B<--runner> I<file>
 

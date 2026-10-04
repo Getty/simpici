@@ -78,6 +78,24 @@ that is valid today. Important details:
   this is not an equivalent overall limit for the entire run.
 - `simpicid --once` can exit with 0 even if a job has failed. Read the build
   status from the report, not just the daemon's exit code.
+- A repository whose refs cannot be read (missing, unreachable, access
+  refused) does not stop the daemon. It logs one line on standard error,
+  polls the remaining repositories and tries again in the next cycle:
+
+  ```text
+  simpicid: repository acme/example (https://github.com/acme/example.git) not polled: SimpiCI::Source::GitPoll git ls-remote failed: fatal: …
+  ```
+
+  The line repeats every cycle while the repository stays unreadable.
+  Credentials in an HTTP(S) clone URL are left out of it. `simpicid --once`
+  still polls every repository and then exits with 1.
+- An unreadable repository keeps its recorded tips, so its return alone
+  builds nothing. A repository that has never been read has no baseline yet:
+  its first successful poll is the initial one, and `build_initial` decides.
+- Only reading the refs is tolerated. A run that cannot be started, an
+  unwritable state root or queue, and an unusable grant end the daemon as
+  before. The ref query has no timeout: a remote that neither answers nor
+  fails holds up the cycle for all repositories.
 - Local polling remembers ref tips. Persistent tuple deduplication is only
   available with the queue in dispatcher mode.
 
@@ -174,7 +192,9 @@ VMware is one possible VM environment, not a SimpiCI protocol requirement.
    daemon reads every granted secret file when it starts and refuses to start
    while a grant is unusable, so its account needs read access to those files,
    like the account behind the SSH endpoint. Restart it after changing the
-   configuration; the journal names an unusable grant.
+   configuration; the journal names an unusable grant. A repository whose
+   refs cannot be read does not stop the daemon: the journal gets a
+   `not polled` line per cycle, as described in section 2.
 4. Use a separate key and a fixed worker name for each worker.
    Assign a forced command to the authorized key:
 
@@ -365,6 +385,13 @@ startup, and a file replaced by an editor is not visible through the mount
 before that. Secret files are read at each claim, so a rotated value needs no
 restart. The poller also reads them once when it starts and exits if a grant
 is unusable; `docker compose logs poller` names it.
+
+A repository the poller cannot read, such as one whose organization does not
+exist on the forge yet, no longer restarts the container. The poller logs a
+`not polled` line for it in every cycle, keeps polling the others and picks
+the repository up once it is readable; section 2 describes the line and what
+is built then. Look for these lines in `docker compose logs poller`: nothing
+else reports a repository that is never read.
 
 On the worker, name the port in `~/.ssh/config` of the account that runs
 `simpici-worker`, because `--dispatcher` takes no port:

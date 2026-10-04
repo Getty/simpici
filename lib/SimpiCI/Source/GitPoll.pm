@@ -35,7 +35,7 @@ has repository => (
 );
 
 sub poll {
-  my ( $self ) = @_;
+  my ( $self, $observed ) = @_;
 
   my $repository = $self->repository;
   my $identity = sha256_hex(join "\0", $repository->{name}, $repository->{clone_url});
@@ -44,7 +44,7 @@ sub poll {
   );
   my $previous = $state_path->is_file
     ? JSON::MaybeXS->new->decode($state_path->slurp_utf8) : {};
-  my $observed = $self->_ls_remote;
+  $observed //= $self->observe;
   my @reports;
 
   for my $ref (sort keys $observed->%*) {
@@ -67,7 +67,7 @@ sub poll {
   return \@reports;
 }
 
-sub _ls_remote {
+sub observe {
   my ( $self ) = @_;
 
   my $repository = $self->repository;
@@ -113,10 +113,24 @@ SimpiCI::Source::GitPoll - poll configured Git refs for SimpiCI
 
 =head1 METHODS
 
+=head2 observe
+
+  my $observed = $poller->observe;
+
+Reads the configured remote refs once with C<git ls-remote> and returns a hash
+reference of ref names to commit ids. Croaks with the text git printed when
+the remote cannot be read. Nothing is persisted, and the call has no timeout
+of its own.
+
 =head2 poll
 
-Reads the configured remote refs once, compares them with persisted state,
-runs accepted changes, saves the new observation, and returns an array reference
-of generated reports.
+  my $reports = $poller->poll;
+  my $reports = $poller->poll($observed);
+
+Compares an observation with persisted state, runs accepted changes, saves the
+observation, and returns an array reference of generated reports. Without an
+argument it calls L</observe> itself, so an unreadable remote croaks before
+anything is run or saved. A caller that has to tell an unreadable remote from
+a failing run observes first and passes the result.
 
 =cut
