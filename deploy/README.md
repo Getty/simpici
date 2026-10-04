@@ -465,12 +465,14 @@ run becomes `failed` with exit code `125`, and its log ends with the reason,
 which the worker also writes to standard error:
 
 ```text
-SimpiCI::Worker run 7 aborted: SimpiCI::Event clone URL must not contain a password; a user name alone is accepted, and SSH authenticates with a key of the account that runs git at /usr/local/share/perl/5.40.1/SimpiCI/Worker.pm line 104.
+SimpiCI::Worker run 7 aborted: SimpiCI::Event clone URL must not contain a password; a user name alone is accepted, and SSH authenticates with a key of the account that runs git
 ```
 
-The reason is the first line of the error. Assigned secret values are redacted
-from it as from the rest of the log; it can name a file of the worker
-installation. The event is checked before any secret file is written, and
+The reason is the first line of the error, without the file and line of the
+worker installation where it was raised. Assigned secret values are redacted
+from it as from the rest of the log. A path the message itself names stays in
+it: a file the worker could not write under its `--root` is named with that
+directory. The event is checked before any secret file is written, and
 `secrets/<run>/` is removed after every outcome the worker process lives to
 see, also when the completion could not be saved. Only a claim whose run is
 not a run number is refused without a report: there is nothing to report it

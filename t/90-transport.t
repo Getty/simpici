@@ -68,6 +68,9 @@ is $? >> 8, 0, 'simpici-worker survives a claim it refuses';
 like $output, qr/SimpiCI::Worker run 2 aborted: SimpiCI::Event clone URL must not contain a password/,
   'and names the run and the reason on standard error';
 unlike $output, qr/transport-secret-value|hunter2-in-url/, 'without the secret or the URL';
+# Where the error was raised is no part of the reason: the log is public.
+my $private_path = qr/ line \d+|\.pm\b|\Q$ENV{TEST_LIB}\E|\Q@{[ $worker_store->root ]}\E/;
+unlike $output, $private_path, 'or a file of the installation or of the worker store';
 ok $store->root->child('claims/2.json')->slurp_utf8 =~ /transport-secret-value/,
   'the claim did carry the secret';
 ok !$worker_store->root->child('secrets')->exists, 'no secret file is written on the worker';
@@ -75,8 +78,10 @@ my $report = JSON::MaybeXS->new->decode($store->root->child('public/runs/2.json'
 is [ $report->@{qw( state exit_code )} ], [ 'failed', 125 ],
   'the dispatcher records a failed run instead of an expiring lease';
 like $store->root->child('public/runs/2.log')->slurp_utf8,
-  qr/\ASimpiCI::Worker run 2 aborted: SimpiCI::Event clone URL must not contain a password/,
-  'with the reason as its log';
+  qr/\ASimpiCI::Worker run 2 aborted: SimpiCI::Event clone URL must not contain a password[^\n]* runs git\n\z/,
+  'with the reason as its log, which ends where the message of the event ends';
+unlike $store->root->child('public/runs/2.log')->slurp_utf8, $private_path,
+  'and names no file of the installation or of the worker store';
 unlike $store->root->child('public/runs/2.log')->slurp_utf8,
   qr/transport-secret-value|hunter2-in-url/, 'and no value in it';
 ok !$worker_store->root->child('completion.json')->exists, 'no completion is left to retry';

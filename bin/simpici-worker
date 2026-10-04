@@ -51,9 +51,10 @@ before upload and retried without rebuilding when the connection fails.
 
 A claim the worker cannot execute, such as an event it refuses, is reported
 to the dispatcher as a failed run with exit code 125. The reason is the last
-line of the uploaded log and is also written to standard error:
+line of the uploaded log and is also written to standard error, without the
+file and line where the error was raised:
 
-  SimpiCI::Worker run 7 aborted: SimpiCI::Event ref must start with refs/ at ...
+  SimpiCI::Worker run 7 aborted: SimpiCI::Event ref must start with refs/
 
 No secret file is written for a refused event, and the secret files of a run
 are removed whichever way it ends.

@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 use Test2::V0;
-use Carp qw( croak );
+use Carp qw( confess croak );
 use JSON::MaybeXS;
 use Path::Tiny qw( path tempdir );
 use SimpiCI::Dispatcher;
@@ -37,6 +37,14 @@ use SimpiCI::Worker;
     push $self->operations->@*, $request->{operation};
     return $self->claim;
   }
+}
+
+{
+  package AbortingWorker;
+  use Moo;
+  extends 'TestWorker';
+  has raise => (is => 'ro');
+  sub _run_claim { $_[0]->raise->() }
 }
 
 umask 0077;
@@ -118,6 +126,10 @@ sub attempt {
 
 sub report { $json->decode($root->child('public/runs/'.$_[0].'.json')->slurp_utf8) }
 
+# Where Perl says an error was raised, " at FILE line N." after the message,
+# or any module file at all.
+my $raised_at = qr/ at \S.* line \d+|\.pm\b/;
+
 sub log_of {
   my $log = $root->child('public/runs/'.$_[0].'.log');
   return $log->is_file ? $log->slurp_utf8 : '';
@@ -137,6 +149,13 @@ subtest 'an event the worker refuses' => sub {
   like $warned, qr/run 1 aborted: SimpiCI::Event clone URL must not contain a password/,
     'the worker names the reason on standard error';
   unlike $warned, qr/\Q$secret\E|\Q$password\E/, 'without a value there either';
+  my $reason = 'SimpiCI::Worker run 1 aborted: SimpiCI::Event clone URL must not contain a'
+    .' password; a user name alone is accepted, and SSH authenticates with a key of the'
+    ." account that runs git\n";
+  is log_of(1), $reason, 'the log is the reason, and ends where the message of the event ends';
+  is $warned, $reason, 'standard error says the same';
+  unlike log_of(1).$warned, qr/$raised_at|\Q$worker_root\E/,
+    'neither names a file of the installation or the store of the worker';
   ok !$worker_root->child('completion.json')->exists, 'the completion was delivered';
 };
 
@@ -151,6 +170,8 @@ subtest 'a reason that quotes a secret value' => sub {
   unlike $finish->{log} // $secret, qr/\Q$secret\E/, 'the value does not leave the worker';
   unlike $warned, qr/\Q$secret\E/, 'nor reach its standard error';
   like $warned, qr/run 2 aborted: /, 'which still names the run';
+  unlike $finish->{log}.$warned, qr/$raised_at|\Q$worker_root\E/,
+    'neither names a file of the installation or the store of the worker';
   unlike log_of(2), qr/\Q$secret\E/, 'the published log is free of it';
 };
 
@@ -166,6 +187,7 @@ subtest 'a run that croaks with the secret files in place' => sub {
     'followed by the reason';
   unlike log_of(3), qr/\Q$secret\E/, 'without the secret value';
   like $warned, qr/run 3 aborted: /, 'the worker names the run on standard error';
+  unlike log_of(3).$warned, $raised_at, 'neither says where in the installation it croaked';
   ok !$worker_root->child('completion.json')->exists, 'the completion was delivered';
 };
 
@@ -224,7 +246,41 @@ subtest 'an event whose fields have the wrong type' => sub {
       'with a reason that names the claim';
     unlike $finish->{log}.$warned, qr/\Q$password\E|forge\.invalid/,
       'and quotes nothing of the event';
+    unlike $finish->{log}.$warned, qr/$raised_at|\Q$private\E/,
+      'nor names a file of the installation or the store of the worker';
     ok !$private->child('secrets')->exists, 'no secret file is written for it';
+  }
+};
+
+subtest 'where an error was raised is cut off its reason' => sub {
+  my $read = "one\ntwo\n";
+  my @raised = (
+    [ 'a croak whose message says " at " itself', 'cannot reach git at forge.invalid',
+      sub { croak 'cannot reach git at forge.invalid' } ],
+    [ 'a die', 'no supervisor', sub { die 'no supervisor' } ],
+    # Perl then appends ", <$input> line 1." to where it died.
+    [ 'a die with a file handle that was read', 'counter is empty', sub {
+      open my $input, '<', \$read or croak 'cannot read';
+      my $line = <$input>;
+      die 'counter is empty';
+    } ],
+    [ 'a backtrace', 'deep failure', sub { confess 'deep failure' } ],
+    [ 'a message that ends in a newline', 'look at this, in line 5 of it',
+      sub { die "look at this, in line 5 of it\n" } ]
+  );
+  for my $case (@raised) {
+    my ( $name, $message, $raise ) = @$case;
+    my $private = tempdir;
+    my $private_store = SimpiCI::Store->new(root => $private);
+    my $aborting = AbortingWorker->new(host => 'unused', store => $private_store,
+      runner => SimpiCI::Runner->new(store => $private_store, runner_script => $executor),
+      raise => $raise, dispatcher => FixedClaim->new(claim => {
+        run => 7, token => 'unused', timeout => 10, event => {}, secrets => {}
+      }));
+    my $caught = warnings { $aborting->once };
+    my $reason = 'SimpiCI::Worker run 7 aborted: '.$message."\n";
+    is $aborting->requests->[-1]{log}, $reason, $name.' is reported with its message alone';
+    is join('', @$caught), $reason, 'and warned the same way';
   }
 };
 

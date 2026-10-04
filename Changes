@@ -68,8 +68,9 @@
     exit code 125 instead of leaving it to its lease: an event it refuses, a
     claim of the wrong shape, secret files it cannot write, a failure of the
     run supervisor. The uploaded log ends with "SimpiCI::Worker run N
-    aborted: <reason>", which is also written to standard error; assigned
-    secret values are redacted from it. The event is checked before any
+    aborted: <reason>", which is also written to standard error; the reason
+    is the first line of the error without the file and line where it was
+    raised, and assigned secret values are redacted from it. The event is checked before any
     secret file is written, and secrets/<run>/ is removed whichever way the
     run ends. A claim whose run is not a run number is refused before
     anything is written.

@@ -75,9 +75,8 @@ sub _completion {
   my $log = $log_path->is_file ? $log_path->slurp_utf8 : '';
   unless ($report) {
     $report = { state => 'failed', exit_code => $self->aborted_exit_code };
-    # Only the first line: a backtrace below it would carry arguments.
     my $reason = $self->_redact($claim, __PACKAGE__.' run '.$claim->{run}.' aborted: '
-      .((split /\n/, $error)[0] // 'unknown error')."\n");
+      .$self->_abort_reason($error)."\n");
     warn $reason;
     $log .= "\n" if length $log && $log !~ /\n\z/;
     $log .= $reason;
@@ -90,6 +89,18 @@ sub _completion {
   };
   $self->store->write_json('completion.json', $request);
   return $request;
+}
+
+# What an error says, without where it was raised. Only the first line: a
+# backtrace below it would carry arguments. And without the " at FILE line N"
+# that croak, die and a type error end it with: the log is public, the file is
+# one of the installation. The greedy start keeps an " at " of the message
+# itself.
+sub _abort_reason {
+  my ( $self, $error ) = @_;
+  my $reason = (split /\n/, $error)[0] // 'unknown error';
+  $reason =~ s/\A(.*) at .+? line \d+(?:, <.*> (?:line|chunk) \d+)?\.?\z/$1/;
+  return $reason;
 }
 
 sub _run_claim {
@@ -160,10 +171,13 @@ the run wrote up to then, followed by the line
 
   SimpiCI::Worker run N aborted: REASON
 
-which C<once> also warns. REASON is the first line of the error, with the
-assigned secret values redacted as in the rest of the log. It can name a file
-of the installation and quote the C<source> of a refused event; the other
-fields of an event are refused without being quoted.
+which C<once> also warns. REASON is the first line of the error, without the
+C< at FILE line N> that C<croak> and C<die> end it with, and with the assigned
+secret values redacted as in the rest of the log. The log is public, so the
+reason does not say where in the installation the error was raised. A path the
+message itself names stays in it, such as the file L<SimpiCI::Store> could not
+publish, and so does the C<source> of a refused event; the other fields of an
+event are refused without being quoted.
 
 The secret files of a claim are removed whatever became of it, also when its
 completion could not be saved. C<once> croaks in that case, and for a claim
