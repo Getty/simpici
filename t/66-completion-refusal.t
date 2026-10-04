@@ -52,10 +52,12 @@ subtest 'a completion whose lease expired' => sub {
   expire($claim->{run});
   my $response = $dispatcher->request('vm', completion($claim));
   is $response, { rejected => 'expired claim' }, 'is answered with the reason and nothing else';
-  is record($claim->{run})->{state}, 'running', 'the run is left as it was';
+  # Every request first ends the leases that ran out, see t/67-lease-expiry.t.
+  is record($claim->{run})->{state}, 'interrupted', 'the run is interrupted by the same request';
+  ok !exists record($claim->{run})->{result}, 'and gets no result';
   ok !$root->child('public/runs/'.$claim->{run}.'.log')->exists, 'and no log is published';
-  is $queue->claim('vm'), undef, 'the next claim marks it';
-  is record($claim->{run})->{state}, 'interrupted', 'as interrupted';
+  is $queue->claim('vm'), undef, 'the next claim finds nothing to do';
+  is record($claim->{run})->{state}, 'interrupted', 'and leaves it interrupted';
   is $dispatcher->request('vm', completion($claim)), { rejected => 'expired claim' },
     'and the completion is answered the same way afterwards';
   is record($claim->{run})->{state}, 'interrupted', 'without an effect on the run';

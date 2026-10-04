@@ -93,6 +93,132 @@ subtest 'the function itself' => sub {
     for qw( SimpiCI::Worker SimpiCI::Dispatcher );
 };
 
+# The dispatcher redacts what the worker has redacted already. A marker of the
+# first pass is no text of the job: no value is found in it or across its
+# ends, or the second pass would show what the first one hid.
+my @twice = (
+  [ 'a value that is a part of the marker', { publish => { A_TOKEN => 'RED' } },
+    'token=RED and REDUCED', 'token=[REDACTED] and [REDACTED]UCED' ],
+  [ 'the end of the marker as a value', { publish => { A_TOKEN => 'ACTED]' } },
+    'x ACTED] y', 'x [REDACTED] y' ],
+  [ 'a single character of the marker', { publish => { A_TOKEN => 'E', B_TOKEN => 'long-value' } },
+    'E=long-value', '[REDACTED]=[REDACTED]' ],
+  [ 'a bracket as a value', { publish => { A_TOKEN => ']', B_TOKEN => 'long-value' } },
+    'a] long-value', 'a[REDACTED] [REDACTED]' ],
+  [ 'a value that begins with the end of the marker',
+    { publish => { A_TOKEN => 'first-value', B_TOKEN => ']bc' } },
+    'afirst-valuebc and ]bc', 'a[REDACTED]bc and [REDACTED]' ],
+  [ 'a value that ends with the beginning of the marker',
+    { publish => { A_TOKEN => 'first-value', B_TOKEN => 'za[RED' } },
+    'zafirst-valueb and za[RED', 'za[REDACTED]b and [REDACTED]' ],
+  [ 'a value that reaches from one marker into the next',
+    { publish => { A_TOKEN => 'first-value', B_TOKEN => 'D] [R' } },
+    'first-value first-value D] [R', '[REDACTED] [REDACTED] [REDACTED]' ],
+  [ 'a marker the job printed itself', { publish => { A_TOKEN => 'RED', B_TOKEN => 'D]x' } },
+    'tool says [REDACTED]x RED', 'tool says [REDACTED]x [REDACTED]' ],
+  [ 'a value right behind a marker the job printed', { publish => { A_TOKEN => 'value' } },
+    '[REDACTED]value[REDACTED]', '[REDACTED][REDACTED][REDACTED]' ]
+);
+
+subtest 'a log that is redacted twice' => sub {
+  for my $case (@twice) {
+    my ( $name, $secrets, $text, $redacted ) = @$case;
+    my $once = SimpiCI::Worker->redact($text, $secrets);
+    is $once, $redacted, $name.': the worker redacts it';
+    is(SimpiCI::Dispatcher->redact($once, $secrets), $redacted,
+      $name.': the dispatcher leaves it as the worker sent it');
+  }
+};
+
+subtest 'redacting twice is redacting once' => sub {
+  # Short values and texts over the characters of the marker and two others:
+  # nearly every value is a part of the marker, begins with its end or ends
+  # with its beginning, and most texts hold a marker of their own.
+  my @alphabet = ( split(//, '[REDACT]'), 'x', ' ' );
+  my $marker = SimpiCI::Dispatcher->redaction_marker;
+  my $state = 20261004;
+  my $random = sub {
+    $state = ( $state * 1103515245 + 12345 ) % 2147483648;
+    return int($state / 65536) % $_[0];
+  };
+  my $word = sub { join '', map { $alphabet[ $random->(scalar @alphabet) ] } 1 .. $_[0] };
+  my ( $changed, $left, @failed ) = ( 0, 0 );
+  for my $round (1 .. 3000) {
+    my %values = map { ( 'V'.$_.'_TOKEN' => $word->(1 + $random->(5)) ) } 1 .. 1 + $random->(3);
+    next if grep { !SimpiCI::Dispatcher->secret_value_valid($_) } values %values;
+    my $text = join '', map {
+      my $pick = $random->(4);
+      $pick == 0 ? $marker : $pick == 1 ? ( values %values )[ $random->(scalar keys %values) ]
+        : $word->(1 + $random->(6));
+    } 1 .. 1 + $random->(6);
+    my $secrets = { publish => \%values };
+    my $once = SimpiCI::Dispatcher->redact($text, $secrets);
+    my $twice = SimpiCI::Dispatcher->redact($once, $secrets);
+    $changed++ if $once ne $text;
+    # What is left of a value stands in a marker or across the end of one:
+    # with the markers taken out as barriers, none is found.
+    my $leftover = grep { my $piece = $_; grep { index($piece, $_) >= 0 } values %values }
+      split /\Q$marker\E/, $once, -1;
+    $left++ if $leftover;
+    push @failed, { text => $text, values => [ sort values %values ], once => $once, twice => $twice }
+      if $twice ne $once || $leftover;
+  }
+  ok $changed > 1000, 'the texts held values to redact' or diag $changed;
+  is $left, 0, 'no value is left outside a marker after the first pass';
+  is scalar(@failed), 0, 'and the second pass changes nothing'
+    or diag map { $json->encode($_)."\n" } grep { defined } @failed[ 0 .. 2 ];
+};
+
+subtest 'a value that holds the marker' => sub {
+  for my $class (qw( SimpiCI::Worker SimpiCI::Dispatcher )) {
+    ok !$class->secret_value_valid($_), $class.' takes "'.$_.'" for no secret value'
+      for '[REDACTED]', 'pass[REDACTED]word', '[REDACTED][REDACTED]';
+    ok $class->secret_value_valid($_), $class.' takes "'.$_.'" for one'
+      for 'RED', ']', '[', 'REDACTED', '[REDACTED', 'pass]word[', 'D]x';
+    # No grant carries one, but a snapshot of another version may: it is
+    # found wherever it stands rather than published.
+    is $class->redact('a pass[REDACTED]word b', { publish => { A_TOKEN => 'pass[REDACTED]word' } }),
+      'a [REDACTED] b', $class.' still redacts such a value';
+  }
+};
+
+subtest 'a log that is cut in a marker' => sub {
+  # The worker sends the last 4 MiB of the redacted log. A cut that falls
+  # into a marker would leave a piece of it that is no marker any more, and
+  # the second pass would find a value in it.
+  my $limit = 4 * 1024 * 1024;
+  my $secrets = { publish => { A_TOKEN => 'E' } };
+  my $root = tempdir;
+  my $store = SimpiCI::Store->new(root => $root);
+  my $worker = PrintingWorker->new(host => 'unused', store => $store,
+    runner => SimpiCI::Runner->new(store => $store, runner_script => $root->child('unused')),
+    output => ( 'y' x 100 ).'E'.( 'x' x ( $limit - 5 ) ),
+    dispatcher => FixedClaim->new(claim => {
+      run => 7, token => 'unused', timeout => 10, event => {}, secrets => $secrets
+    }));
+  $worker->once;
+  my $sent = $worker->requests->[-1]{log};
+  ok length($sent) <= $limit, 'the log is no longer than its limit';
+  is substr($sent, 0, 12), 'x' x 12, 'and begins behind the marker the cut fell into';
+  is length($sent), $limit - 5, 'with nothing else left out';
+  ok(SimpiCI::Dispatcher->redact($sent, $secrets) eq $sent, 'the dispatcher leaves it as it is');
+
+  my $marker = SimpiCI::Worker->redaction_marker;
+  for my $case (
+    [ 'a text within the limit', 'ab'.$marker, 12, 'ab'.$marker ],
+    [ 'a cut in front of a marker', 'ab'.$marker.'cd', 12, $marker.'cd' ],
+    [ 'a cut behind a marker', 'ab'.$marker.'cd', 2, 'cd' ],
+    [ 'a cut behind the first character of a marker', 'ab'.$marker.'cd', 11, 'cd' ],
+    [ 'a cut in front of the last character of a marker', 'ab'.$marker.'cd', 3, 'cd' ],
+    [ 'a cut in the second of two markers', $marker.$marker.'cd', 7, 'cd' ],
+    [ 'a cut in a text without a marker', 'abcdefghijklmnop', 4, 'mnop' ],
+    [ 'a cut in what only begins like a marker', 'ab[REDACTEDxcd', 8, 'ACTEDxcd' ]
+  ) {
+    my ( $name, $text, $length, $tail ) = @$case;
+    is(SimpiCI::Worker->redacted_tail($text, $length), $tail, $name);
+  }
+};
+
 subtest 'the log a worker sends' => sub {
   for my $case (grep { ref $_->[1] } @cases) {
     my ( $name, $secrets, $text, $redacted ) = @$case;

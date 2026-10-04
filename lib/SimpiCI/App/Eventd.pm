@@ -51,14 +51,21 @@ sub run {
     $configured_runner ? (runner_script => path($configured_runner)) : ()
   );
 
+  my $dispatcher;
   if (($config->{mode} // 'local') eq 'dispatcher') {
     $runner = SimpiCI::Queue->new(store => $store);
     # Do not poll for a configuration that no claim could be served from.
-    $class->dispatcher_class->new(queue => $runner, config => $config)->validate;
+    $dispatcher = $class->dispatcher_class->new(queue => $runner, config => $config)->validate;
   }
 
   my $status = 0;
   while (1) {
+    # First, so that no repository that hangs or cannot be read keeps it
+    # back: a lease that ran out is seen in the next cycle, with or without
+    # a worker that asks. It is the step every request of a worker takes.
+    if ($dispatcher) {
+      warn $class->interrupted_message($_) for $dispatcher->expire_leases;
+    }
     for my $repository ($config->{repositories}->@*) {
       my $poller = SimpiCI::Source::GitPoll->new(
         store      => $store,
@@ -116,6 +123,12 @@ sub check_repositories {
   return;
 }
 
+sub interrupted_message {
+  my ( $class, $report ) = @_;
+
+  return 'simpicid: run '.$report->{run}.' interrupted: its lease expired without a completion'."\n";
+}
+
 sub unread_message {
   my ( $class, $repository, $reason ) = @_;
 
@@ -152,6 +165,29 @@ deduplication. In that mode the daemon checks every secret grant before it
 polls and exits with a message naming the repository, the secret and the
 reason if one is unusable; it therefore needs read access to the secret files.
 Local mode does not evaluate grants.
+
+In dispatcher mode every polling cycle begins with
+L<SimpiCI::Dispatcher/expire_leases>, before the first repository is read:
+a run whose lease ran out becomes C<interrupted>, and the secret snapshot of
+its claim is removed. The daemon writes one line to standard error for each
+run it interrupted:
+
+  simpicid: run 7 interrupted: its lease expired without a completion
+
+It is the step every request of a worker begins with. Taken here, it does
+not wait for a worker: a run whose worker is gone, or whose claim never
+reached a worker, is C<interrupted> within one C<interval> after its lease
+ran out. A repository that cannot be read or that hangs does not hold it
+back, because it comes first, and a cycle without any repository takes it
+too. The line is written once, by the cycle that interrupted the run; a run
+that a request of a worker interrupted first gets none. The exit status of
+C<--once> is not changed by it. A failure of the step, a queue that cannot
+be written or a snapshot that cannot be removed, ends the daemon like any
+other failure of the queue; a run it had interrupted by then stays
+interrupted, without the line. A daemon that is ended in the middle of the
+step leaves nothing half done that its next cycle does not finish, see
+L<SimpiCI::Queue/expire_leases>. Local mode has no queue and takes no such
+step.
 
 In either mode the daemon first looks at C<repositories>, see
 L</check_repositories>, and exits before it polls if an entry cannot be used.
@@ -276,7 +312,8 @@ as they are and never removed.
 
 =head2 dispatcher_class
 
-Class used to check the grants in dispatcher mode.
+Class used in dispatcher mode to check the grants at the start and to end
+the leases that ran out in every cycle.
 
 =head2 event_class
 
@@ -317,6 +354,14 @@ Runs the daemon with an explicit argument list and returns its process exit
 status when C<--once> is used or the loop otherwise ends: 1 if a repository
 was not polled, 0 otherwise.
 
+=head2 interrupted_message
+
+  warn SimpiCI::App::Eventd->interrupted_message($report);
+
+Formats the single log line for a run that L</run> interrupted because its
+lease ran out, from the report L<SimpiCI::Dispatcher/expire_leases> returned
+for it. It names the run number and nothing else of the run.
+
 =head2 unread_message
 
   warn SimpiCI::App::Eventd->unread_message($repository, $reason);
@@ -345,7 +390,8 @@ reports for build status. The exit status is 1 if the refs of a repository
 could not be read, be it that the query failed or that it ran into
 C<ls_remote_timeout>, if it returned none while configured refs of its last
 poll are missed, or if it has none at all and nothing is recorded; the other
-repositories are polled all the same.
+repositories are polled all the same. In dispatcher mode the leases that ran
+out are ended before the repositories are read, as in every cycle.
 
 =item B<--runner> I<file>
 

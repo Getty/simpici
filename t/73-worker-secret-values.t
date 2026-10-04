@@ -80,7 +80,8 @@ my %refused_value = (
   'a value of two lines'      => $inner."\nCICD_REGISTRY=forged.invalid",
   'a value with a line end'   => $inner."\n",
   'a value with a return'     => $inner."\r",
-  'a value with a NUL'        => $inner."\0"
+  'a value with a NUL'        => $inner."\0",
+  'a value with the marker'   => $inner.'[REDACTED]'
 );
 my %refused_name = (
   'a name with an assignment' => 'PUBLISH_TOKEN=x',

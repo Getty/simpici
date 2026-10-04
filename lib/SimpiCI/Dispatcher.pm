@@ -88,8 +88,8 @@ sub _grant {
       .(ref $error eq 'Path::Tiny::Error' ? $error->{err} : 'content is not readable text'));
   }
   $value =~ s/\r?\n\z//;
-  $self->_reject($where, 'secret must be one nonempty line')
-    unless $self->secret_value_valid($value);
+  my $rejection = $self->secret_value_rejection($value);
+  $self->_reject($where, 'secret '.$rejection) if defined $rejection;
   return {
     repository => $repo->{name},
     clone_url  => $repo->{clone_url},
@@ -187,13 +187,25 @@ sub _remove_snapshot {
   return $removed ? 1 : 0;
 }
 
+# The one step that ends what a lost worker left, for a request as for the
+# polling daemon. The queue decides under its lock; the snapshots follow what
+# it decided, and a completion that is being served beside this finds its
+# run interrupted when it asks the queue to record it.
+sub expire_leases {
+  my ( $self ) = @_;
+  my @reports = $self->queue->expire_leases;
+  $self->remove_stale_snapshots;
+  return @reports;
+}
+
 sub request {
   my ( $self, $worker, $request ) = @_;
   croak __PACKAGE__.' invalid request' unless ref $request eq 'HASH';
   my $operation = $request->{operation} // '';
   # Before anything of the request can fail: an unusable grant or a refused
-  # completion must not keep the secret values of a run that is over.
-  $self->remove_stale_snapshots;
+  # completion must not keep a run running, or its secret values, that is
+  # over.
+  $self->expire_leases;
   if ($operation eq 'claim') {
     # Resolve every grant before taking a lease: a configuration error must
     # not use up queued work.
@@ -257,11 +269,13 @@ accepted events; worker-supplied metadata is discarded.
 
 The grants of all repositories are checked as a whole, not only those that
 match an event: name, ref patterns, list shapes, phases and a readable secret
-file holding one nonempty line. An error names the repository, the secret and
-the reason, never a secret value. A claim runs this check before it takes a
-lease, so a configuration error leaves queued work queued; the values read by
-that check are the ones handed out. A completion is accepted without the
-check: it needs only the queue and the secret snapshot of its claim.
+file holding a value L<SimpiCI::Role::Secrets/secret_value_rejection> has
+nothing against, one nonempty line without the redaction marker. An error
+names the repository, the secret and the reason, never a secret value. A
+claim runs this check before it takes a lease, so a configuration error
+leaves queued work queued; the values read by that check are the ones handed
+out. A completion is accepted without the check: it needs only the queue and
+the secret snapshot of its claim.
 
 =head2 A completion that is refused
 
@@ -281,7 +295,9 @@ The queue is asked before anything else of the completion is looked at, so a
 refused completion is refused whatever its result or log are. Nothing is
 published or recorded for it, and the secret snapshot of the run is not
 removed by it: a completion with a foreign token must not take the snapshot
-from the worker that holds the lease.
+from the worker that holds the lease. A completion that comes too late finds
+its run C<interrupted>, by the step every request begins with if nothing
+ended the lease before, see L</A lease that ends without a completion>.
 
 A completion of a run that already has its result, from the worker and token
 that completed it, is not refused. It is answered with the report again, as
@@ -289,6 +305,57 @@ the retry after a lost answer needs it.
 
 A completion of a leased run with a result or log the protocol does not
 allow is an error, not a refusal: no worker of this version sends one.
+
+=head2 A lease that ends without a completion
+
+A run that was claimed is C<running> until its completion is recorded or its
+lease runs out. L</expire_leases> is the one step that ends a lease that ran
+out: the run becomes C<interrupted>, is never handed out again, and its
+secret snapshot is removed. Two callers take the step, so that it does not
+depend on a worker that asks:
+
+=over 4
+
+=item *
+
+L</request>, before it looks at the request. That covers a dispatcher whose
+polling daemon is not running.
+
+=item *
+
+C<simpicid> in dispatcher mode, at the beginning of every polling cycle and
+before it reads a repository, see L<SimpiCI::App::Eventd>. A run whose
+worker is gone is therefore C<interrupted> one cycle after its lease ran
+out, and the daemon logs it.
+
+=back
+
+A completion can arrive while the step ends the lease of its run. The queue
+decides both under its lock, see L<SimpiCI::Queue/expire_leases>, and
+L</request> asks it to record the result only after the log is redacted, so
+one of two things happens. The completion is recorded first: the run has its
+result and its redacted log, and the step leaves it alone. Or the lease is
+ended first: the completion fails with C<expired claim> where it was being
+served and is answered as L</A completion that is refused> when the worker
+sends it again; nothing of it is published. In neither order is a log
+published that the snapshot did not redact, because a snapshot is removed
+only for a lease that is over, and a lease that is over accepts nothing.
+
+=head2 A claim that is leased but not delivered
+
+A C<claim> saves the lease, then writes the snapshot, then returns the
+claim. A dispatcher that dies in between, or an answer that is lost on its
+way, leaves a run that is leased to a worker that never received it. It is
+not handed out again: nothing tells this run from one whose worker received
+the claim and was lost in the middle of a publish, and an answer cannot be
+confirmed over the transport. The run stays C<running> until its lease runs
+out and is then C<interrupted> by L</expire_leases>, without a log.
+
+Holding the lease back until the answer is delivered was considered and not
+built: standard output of a forced command gives no acknowledgement, so the
+dispatcher would have to guess, and a guess that is wrong runs a publish
+twice. What an operator sees and does is in the operations guide,
+F<deploy/README.md>, under "A claim that never reached its worker".
 
 =head2 Secret snapshot of a claim
 
@@ -311,16 +378,17 @@ leased, the file is still there and the worker's retry is redacted from it.
 
 =item *
 
-Every request, a claim as well as a completion, first calls
-L</remove_stale_snapshots>. That removes the file of a lease that expired,
-of a run that was completed by a dispatcher that died before it removed the
-file, and of every run completed by a version that kept them.
+L</expire_leases> removes the file of a lease that ran out, of a run that
+was completed by a dispatcher that died before it removed the file, and of
+every run completed by a version that kept them. Every request takes that
+step first, a claim as well as a completion, and C<simpicid> takes it at
+the beginning of every polling cycle.
 
 =back
 
-There is no other moment: a lease that expires while no worker asks for
-anything keeps its file until the next request, just as its run keeps the
-state C<running> until the next claim.
+A lease that runs out while no worker asks for anything therefore keeps its
+file until the next cycle of the daemon, and only where no C<simpicid> runs
+in dispatcher mode until the next request.
 
 No log is published that was not redacted from the snapshot. A completion
 that is accepted while the file is missing, as after it was removed by hand,
@@ -353,10 +421,26 @@ because the executor only passes it through.
   my $response = $dispatcher->request($worker, { operation => 'claim' });
 
 Serves one C<claim> or C<finish> request for the given worker identity, after
-it called L</remove_stale_snapshots>. A C<claim> returns the claim, or an
+it called L</expire_leases>. A C<claim> returns the claim, or an
 empty hash if nothing is queued. A C<finish> returns the report of the run,
 or C<{ rejected =E<gt> REASON }> for L</A completion that is refused>.
 Croaks for any other request and for every error.
+
+=head2 expire_leases
+
+  my @reports = $dispatcher->expire_leases;
+
+Ends what a worker that is gone left behind: L<SimpiCI::Queue/expire_leases>
+marks every run as C<interrupted> whose lease ran out, and
+L</remove_stale_snapshots> removes the secret snapshots nothing can be
+completed with any more. Returns the reports of the runs that were
+interrupted by this call, nothing if there was none.
+
+It needs no grant and reads no secret file, so it works on a configuration
+that serves no claim. L</request> calls it before anything else, and
+C<simpicid> in dispatcher mode at the beginning of every polling cycle, so
+that a lease does not wait for a worker to ask before it is seen to be over,
+see L</A lease that ends without a completion>.
 
 =head2 remove_stale_snapshots
 

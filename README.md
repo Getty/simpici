@@ -491,6 +491,12 @@ retrieves jobs over a restricted outbound SSH connection.
 [Keys, grants, mounts and recovery](deploy/README.md) belong in the operations
 guide, not in build scripts.
 
+`simpici-dispatch`, the endpoint behind that connection, gives a worker 30
+seconds to send its request; the optional top-level setting
+`request_read_timeout` of the dispatcher configuration changes that. Only
+the reading is limited: a request that was read is served to its end,
+however long the queue or the redaction of a large log take.
+
 The worker saves the completion of a run before it sends it, and sends it
 again until the dispatcher answers. A dispatcher it cannot reach, or one that
 fails, never ends that retry. A completion the dispatcher refuses for good,
@@ -502,6 +508,14 @@ with the next claim. SimpiCI never removes those files; see
 
 The runner reports a run as `success`, `skipped`, `failed`, `timed_out` or
 `signalled`; the dispatcher adds `interrupted` for a run whose lease expired.
+`simpicid` in dispatcher mode marks such a run at the beginning of its next
+polling cycle, whether or not a worker ever asks again, and logs
+`simpicid: run <run> interrupted: its lease expired without a completion`;
+a request of a worker does the same if it comes first. An interrupted run is
+never run again by itself. That includes a claim that never reached its
+worker because the dispatcher died between saving the lease and answering:
+[recovery and limits](deploy/README.md#a-claim-that-never-reached-its-worker)
+says how to recognise it and how to have the commit built after all.
 A checkout command or an executor that a signal ended is `signalled` with the
 exit code 128 plus the signal, never a success, and the checkout does not go
 on after it.
@@ -539,9 +553,14 @@ state root nor the installation, and the checkout is made quietly; what git,
 the container runtime and the jobs print is passed on as it is, the clone
 URL in the output of `git fetch` included. Only the worker/dispatcher path
 redacts secret values assigned by the dispatcher: every literal occurrence of
-every value, also where two of them overlap. The dispatcher keeps the values
-of a claim in the clear under `<root>/claims/` until the completion of the
-run is accepted, or until the first worker request after its lease expired.
+every value, also where two of them overlap. A `[REDACTED]` that is in the
+text already counts as a marker, not as output: the dispatcher redacts what
+the worker has redacted, and a value such as `RED` must not be found in the
+worker's markers. A value that contains `[REDACTED]` is refused as a secret.
+The dispatcher keeps the values of a claim in the clear under
+`<root>/claims/` until the completion of the run is accepted, or until the
+first polling cycle of `simpicid` after its lease expired, or a worker's
+request if that comes first.
 The worker keeps them under `<root>/secrets/` while the run lasts; a worker
 that was killed removes what it left there at its next start.
 

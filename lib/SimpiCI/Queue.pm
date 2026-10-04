@@ -32,9 +32,20 @@ sub _records {
     grep { $_->basename =~ /\A[1-9][0-9]*\.json\z/ } $directory->children;
 }
 
-sub _save {
+sub _write {
   my ( $self, $record ) = @_;
   $self->store->write_json('queue/'.$record->{run}.'.json', $record);
+  return $record;
+}
+
+sub _save {
+  my ( $self, $record ) = @_;
+  $self->_write($record);
+  return $self->_publish($record);
+}
+
+sub _publish {
+  my ( $self, $record ) = @_;
   my $event = $record->{event};
   my $report = {
     (map { $_ => $event->{$_} } qw( source event repository ref commit )),
@@ -62,16 +73,39 @@ sub run {
   });
 }
 
+# The one place where a lease ends without a completion, for whoever holds
+# the lock. Never replay a possibly completed publish/deploy after losing a
+# worker: the run becomes interrupted, not queued.
+#
+# The report is published before the queue has the new state. Nothing comes
+# back for an interrupted run, so a step that was cut off between the two
+# must be one the next step takes again: with the queue written first, the
+# report would say running for good.
+sub _expire_leases {
+  my ( $self, @records ) = @_;
+  my $now = time;
+  my @reports;
+  for my $record (grep { $_->{state} eq 'running' && $_->{expires} <= $now } @records) {
+    $record->{state} = 'interrupted';
+    push @reports, $self->_publish($record);
+    $self->_write($record);
+  }
+  return @reports;
+}
+
+sub expire_leases {
+  my ( $self ) = @_;
+  my $lock = $self->_lock;
+  return $self->_expire_leases($self->_records);
+}
+
 sub claim {
   my ( $self, $worker ) = @_;
   croak __PACKAGE__.' invalid worker' unless $worker =~ /\A[a-zA-Z0-9_-]{1,64}\z/;
   my $lock = $self->_lock;
-  for my $record ($self->_records) {
-    if ($record->{state} eq 'running' && $record->{expires} <= time) {
-      # Never replay a possibly completed publish/deploy after losing a worker.
-      $record->{state} = 'interrupted';
-      $self->_save($record);
-    }
+  my @records = $self->_records;
+  $self->_expire_leases(@records);
+  for my $record (@records) {
     next unless $record->{state} eq 'queued';
     $record->{state} = 'running';
     $record->{worker} = $worker;
@@ -160,6 +194,12 @@ returning it. C<finish> accepts only the owning worker and claim token.
 Expired leases become interrupted, never automatically replayed: a lost
 worker may already have performed an external publish operation.
 
+A lease ends in one of two ways, and both are decided under the lock of the
+queue: L</finish> records the result of a run whose lease stands, and
+L</expire_leases> interrupts a run whose lease ran out. Whichever comes
+first is final. A run that has its result is never interrupted, and a
+completion for an interrupted run is refused, so a run is never both.
+
 C<finish> publishes the log before it records the result. A dispatcher that
 dies in between leaves the run leased, and the worker's retry publishes the
 log again. Once the result is recorded, a repeated completion returns the
@@ -179,9 +219,28 @@ deduplication key.
 
   my $record = $queue->claim($worker);
 
-Marks the running records whose lease has expired as interrupted, then leases
-the oldest queued run to the worker and returns its record, or nothing if no
-run is queued.
+Ends the leases that ran out as L</expire_leases> does, then leases the
+oldest queued run to the worker and returns its record, or nothing if no run
+is queued.
+
+=head2 expire_leases
+
+  my @reports = $queue->expire_leases;
+
+Marks every run as C<interrupted> that is C<running> on a lease that ran
+out, publishes its report and returns the reports of the runs it marked, in
+the order of their run numbers; nothing if there was none. An interrupted
+run is not queued again and has no result.
+
+The report of a run is published before the queue records the new state.
+Nothing is ever asked about an interrupted run again, so a process that is
+killed between the two leaves a lease that is still there and expired, and
+the next call ends it once more; the other order would leave a report that
+says C<running> for good.
+
+L</claim> does the same before it leases a run. L<SimpiCI::Dispatcher> calls
+it for every request and C<simpicid> in every polling cycle, so that a run
+whose worker is gone does not stay C<running> until a worker asks.
 
 =head2 leased
 
@@ -189,9 +248,10 @@ run is queued.
 
 True while a completion of the run can still be accepted: it is claimed, has
 no result and its lease has not expired. False for a queued, completed,
-interrupted or unknown run, and for a run whose lease has expired but that no
-claim has marked as interrupted yet. A run that is not leased after it was
-claimed never becomes leased again. Croaks unless C<$run> is a run number.
+interrupted or unknown run, and for a run whose lease has expired but that
+L</expire_leases> has not marked as interrupted yet. A run that is not leased
+after it was claimed never becomes leased again. Croaks unless C<$run> is a
+run number.
 
 =head2 refusal
 
@@ -213,8 +273,8 @@ at all.
 
 =item C<expired claim>
 
-The lease is over: it ran out, or a later claim marked the run as
-interrupted.
+The lease is over: it ran out, whether or not L</expire_leases> has marked
+the run as interrupted yet.
 
 =back
 

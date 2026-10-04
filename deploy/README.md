@@ -558,6 +558,9 @@ A grant is not a general environment file for all jobs:
   grant can supply; registry host and user come from the worker host's
   environment.
 - Each secret value is stored in a private file as a single nonempty line.
+  A value that contains `[REDACTED]` is rejected: it is the marker a
+  redacted value is replaced by, and what stands in a secret file with it is
+  usually a line copied from a published log instead of the value.
 - Mirror entries need their own grants if both clone URLs may produce runs.
   Otherwise, the source actually used for the run determines the outcome.
 
@@ -565,8 +568,8 @@ The grants of all repositories are checked together, whether or not a run
 would match them: when `simpicid` starts in dispatcher mode, and again by
 `simpici-dispatch` before every claim. The check covers the name, the ref
 patterns, the list shapes, the phases and the secret file, which must be
-readable and hold one nonempty line. A failure names the configuration entry
-and the reason, never a value:
+readable and hold one nonempty line without the marker `[REDACTED]`. A
+failure names the configuration entry and the reason, never a value:
 
 ```text
 SimpiCI::Dispatcher repository acme/example (repositories[0]), secret CICD_REGISTRY_PASSWORD (secrets[0]): cannot read secret file /etc/simpici/secrets/registry-password: No such file or directory
@@ -642,12 +645,82 @@ baseline; section 2 describes the log lines and the limits of both rules. A
 mirror has to finish its first synchronisation before it is polled.
 
 Claims expire after the configured execution timeout plus 30 minutes for
-checkout and transfer. On the next claim, expired work is marked
-`interrupted`, **not automatically run again**: a publish or deploy operation
-may already have taken effect. There is no heartbeat, automatic publish retry
-or ready-to-use retry/cancel operator CLI. While a grant is unusable, no claim
-is served, so expired work keeps its `running` state until the configuration
-is fixed.
+checkout and transfer. Expired work is marked `interrupted`, **not
+automatically run again**: a publish or deploy operation may already have
+taken effect. There is no heartbeat, automatic publish retry or ready-to-use
+retry/cancel operator CLI.
+
+Nobody has to ask for that. `simpicid` in dispatcher mode ends the leases
+that ran out at the beginning of every polling cycle, before it reads a
+repository, and says so in its journal, one line per run:
+
+```text
+simpicid: run 7 interrupted: its lease expired without a completion
+```
+
+A run whose worker is gone is therefore `interrupted` within one `interval`
+after its lease ran out, and its secret snapshot is removed in the same
+step, see [where secret values are kept](#where-secret-values-are-kept-and-for-how-long).
+The step needs no repository to be readable and no usable grant, and
+`simpicid --once` takes it too, without a change to its exit status. Every
+request of a worker takes the same step first, a claim as well as a
+completion, so a dispatcher whose `simpicid` is stopped still notices an
+expired lease when a worker connects; the journal line is written by the
+daemon only. A completion that arrives while the daemon ends the lease of
+its run is either recorded, with its redacted log, or refused as an `expired
+claim`: the queue decides both under one lock, and whichever comes first
+stands.
+
+`simpici-dispatch` gives a worker 30 seconds to send its request and ends
+with `simpici-dispatch request not read within 30 s` if it is not complete by
+then, so that a sender that hangs does not keep a session. The limit covers
+the reading alone. A request that was read is served to its end, however
+long it waits for the queue or redacts a log of megabytes; ending it in the
+middle would only make the worker send it again. On a slow link, where 8 MiB
+of completion take longer than that, raise the limit with the top-level
+setting `request_read_timeout`, a positive integer of seconds. It is read
+for every request, so it needs no restart, and any other value fails every
+request with `simpici-dispatch request_read_timeout must be a positive
+integer`.
+
+#### A claim that never reached its worker
+
+A claim is saved before it is answered: the lease is written to the queue,
+then the secret snapshot, then the answer goes out over SSH. If the
+dispatcher dies between the first and the last of these, because the host
+goes down, the container is stopped or the connection breaks while the
+answer is on its way, **the run is leased to a worker that never heard of
+it**. The dispatcher cannot tell that from a worker that received the claim
+and was lost in the middle of a publish, and an answer over SSH cannot be
+confirmed, so the run is not handed out again. It ends as every lost run
+does:
+
+- The run stays `running` for `timeout` plus 30 minutes. A worker that asks
+  in that time gets the next queued run, or nothing.
+- Then `simpicid` marks it `interrupted` in its next cycle and logs the line
+  above. No log is published, because nothing ran.
+- The worker has nothing of the run: no line that names it in its journal,
+  no `secrets/<run>/`, no `completion.json` and no `rejected/<run>.json`. At
+  the time of the claim its journal has `dispatcher connection failed` or
+  `invalid dispatcher response` instead. That is what tells this case from
+  a run that was lost on the worker, which leaves `removed orphaned` lines
+  or a `rejected by the dispatcher` line there once the worker runs again.
+
+An `interrupted` run is never run again by itself, and its commit is
+deduplicated: polling the same ref on the same commit builds nothing. To
+have it built after all:
+
+- **Push a new commit** to the ref. It is a new run; nothing else is needed.
+- **For the same commit**, a release tag for instance, there is no command.
+  By hand, as the account of the daemon: make sure the run really did not
+  take effect; stop `simpicid`; remove `<root>/queue/<run>.json`; forget
+  the ref with `simpici --config FILE --repository NAME --forget REF`, see
+  [forgetting one ref](#forgetting-one-ref); start `simpicid`. Its next
+  cycle finds the ref new and queues the commit under a new run number, with
+  the grants of the configuration as it is then. The report of the
+  interrupted run stays under `public/runs/` and leaves `index.json` with
+  the next run that is written. A worker that asks while the file is being
+  removed may get an error and asks again.
 
 The worker persists `completion.json` before uploading it. If an SSH response
 is lost, the completion can therefore be retried idempotently without
@@ -741,7 +814,7 @@ dispatcher did with the completion, so none of them ever ends the retry.
 
 | Reason | What happened | The run at the dispatcher |
 | --- | --- | --- |
-| `expired claim` | The lease was over when the completion arrived: run, checkout and upload took longer than `timeout` plus 30 minutes, or the worker could not reach the dispatcher for that long | `interrupted` once the next claim has marked it, `running` until then. It is not run again |
+| `expired claim` | The lease was over when the completion arrived: run, checkout and upload took longer than `timeout` plus 30 minutes, or the worker could not reach the dispatcher for that long | `interrupted`: by the daemon's next cycle after the lease ran out, at the latest by this request. It is not run again |
 | `stale claim` | The run is claimed under another worker name or token, for example because the `--worker` name of the forced command was changed during the run | Keeps the lease of its claimant until that expires |
 | `unknown run` | The dispatcher has no such run: its state was replaced, or the worker was pointed at another dispatcher | None |
 
@@ -800,7 +873,7 @@ a job wrote as another account than the worker.
 
 | Where | Content | Removed |
 | --- | --- | --- |
-| Dispatcher, `<root>/claims/<run>.json` | The values handed out with the claim, in the clear, mode `0600`. Written for every claim, also one without secrets | When the completion of the run is accepted and recorded, and otherwise by the first request of any worker after the lease expired |
+| Dispatcher, `<root>/claims/<run>.json` | The values handed out with the claim, in the clear, mode `0600`. Written for every claim, also one without secrets | When the completion of the run is accepted and recorded, and otherwise when the lease has run out: by the next polling cycle of `simpicid`, or by a worker's request if that comes first |
 | Worker, `<root>/secrets/<run>/publish.env` and `deploy.env` | One `NAME=VALUE` line per secret, passed to the jobs of that phase | When the run ends, whichever way; after a killed worker, by the next start |
 | Worker, the publish and deploy containers of the run | The values of their phase, as environment of the container | With the container: when its job ends, and within seconds when the run is ended by its timeout, by a signal for the worker or after a killed worker. What survives even that is removed by the next start |
 | Worker, `<root>/public/runs/<run>.log` | Whatever the jobs printed, unredacted | When the completion of the run is saved, before it is sent; after a killed worker, by the next start |
@@ -817,17 +890,34 @@ The rest of a worker's state root holds no output of a job: `instance`,
 **Dispatcher.** The snapshot is what the log of the run is redacted from, so
 a value rotated during the run is still found. It is removed only after the
 redacted log is published and the result is recorded: a dispatcher that dies
-in between keeps the file, and the worker's retry is redacted from it. Every
-request to `simpici-dispatch`, a claim or a completion, first removes the
-snapshots of all runs that can no longer be completed: expired leases,
-completed runs, and the files a version before this one never removed, which
-go with the first request after the upgrade. A file in `claims/` that is not
-a snapshot is left alone.
+in between keeps the file, and the worker's retry is redacted from it.
 
-Expiry is noticed only when a worker connects. While none does, an expired
-run stays `running` and its snapshot stays in `claims/`; if the workers are
-gone for good, remove the files in `claims/` by hand. The directory needs no
-backup and should be left out of one.
+Everything else goes with one step, which `simpicid` takes at the beginning
+of every polling cycle and `simpici-dispatch` before every request, a claim
+or a completion: it marks the runs whose lease ran out as `interrupted` and
+removes the snapshots of all runs that can no longer be completed. Those are
+the expired leases, completed runs whose dispatcher died before it removed
+the file, and the files a version before this one never removed, which go
+with the first cycle or request after the upgrade. A file in `claims/` that
+is not a snapshot is left alone.
+
+**A snapshot therefore outlives its lease by one polling cycle at most:**
+`timeout` plus 30 minutes from the claim, plus `interval` and the time the
+cycle before it took. No worker has to connect for that. A repository that
+cannot be read, or that hangs for its `ls_remote_timeout`, does not hold the
+step back, because it comes first in the cycle. Three things do, and each
+leaves the files where they are:
+
+- `simpicid` is not running, or runs in local mode. Then only a worker's
+  request removes them. With the daemon stopped and the workers gone for
+  good, remove the files in `claims/` by hand.
+- A file cannot be removed. The daemon ends with `SimpiCI::Dispatcher cannot
+  remove secret snapshot <file>: <reason>`, and so does every request, until
+  it can.
+- The lease still stands. A snapshot is never removed before that, whatever
+  became of the worker: its completion could still arrive.
+
+The directory needs no backup and should be left out of one.
 
 No log is published that the snapshot did not redact. If the snapshot of a
 run is missing when its completion arrives, the result is recorded and the
@@ -843,8 +933,9 @@ and the completion is gone once the dispatcher has accepted it.
 
 **Worker.** A secret is written only as one `NAME=VALUE` line. A claim with a
 secret that is not one, such as an undefined or empty value, a structure
-instead of a string, a value with a line end or a name that is not
-`CICD_<NAME>` or `<NAME>_TOKEN`, is not executed: the run becomes `failed`
+instead of a string, a value with a line end, a value that contains the
+marker `[REDACTED]` or a name that is not `CICD_<NAME>` or `<NAME>_TOKEN`, is
+not executed: the run becomes `failed`
 with exit code `125` and the reason `invalid secret name in claim` or
 `invalid secret value in claim`, which names neither the secret nor its
 value. The dispatcher grants nothing of that kind, so this points to a
@@ -1077,7 +1168,29 @@ whichever order the values are taken: where one value begins another one, or
 two of them overlap in the output, nothing of either is left, and values that
 overlap or stand side by side become one marker. This does not detect
 arbitrary sensitive information, a value a job prints encoded or split, or
-intentional exfiltration. Final logs are limited to the last 4 MiB. Live logs
+intentional exfiltration.
+
+The dispatcher redacts a log the worker has redacted already, so a marker in
+the text is treated as one and not as output of the job: a value is not
+looked for inside a marker or across one of its ends. Otherwise a value that
+is a piece of `[REDACTED]`, such as `RED` or `E`, or one that begins with
+`]`, would be replaced in the worker's markers and show in the published log
+what it is. Redacting a log twice gives what redacting it once gives, for
+every value a grant can carry. That holds between a worker and a dispatcher
+of this version: a dispatcher of an earlier one still looks for values in
+the worker's markers, so install both together. Three consequences:
+
+- A value that contains `[REDACTED]` cannot be a secret, see
+  [secret grants](#understand-secret-grants).
+- A marker that a job or one of its tools prints itself stays as it is, and a
+  value is not found where it would share characters with that marker. A
+  value directly before or behind a marker is redacted as everywhere else.
+- A secret of a few characters is redacted wherever those characters stand,
+  in ordinary words too. That shows where it was, which no redaction can
+  avoid; use values that do not occur by chance.
+
+Final logs are limited to the last 4 MiB, and the cut never falls into a
+marker: one it would split is left out as a whole. Live logs
 and artifacts are not transferred, and the worker keeps neither: checkouts,
 outputs and artifacts are removed with the run, see
 [where secret values are kept](#where-secret-values-are-kept-and-for-how-long).
@@ -1151,6 +1264,12 @@ its last poll are missed gets such a line as well, and so does one that has
 no refs at all yet. Look for these lines in
 `docker compose logs poller`: nothing else reports a repository that is never
 read.
+
+The poller is also what ends a lease that ran out: its log has an
+`interrupted` line for each such run, and the secret snapshot of the run
+leaves `state/claims/` in the same cycle, see
+[recovery and limits](#recovery-and-limits). With the `poller` service
+stopped, both wait for the next request of a worker.
 
 On the worker, name the port in `~/.ssh/config` of the account that runs
 `simpici-worker`, because `--dispatcher` takes no port:

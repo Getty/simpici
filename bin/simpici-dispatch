@@ -18,11 +18,30 @@ my ($config_path, $worker);
 GetOptions('config=s' => \$config_path, 'worker=s' => \$worker)
   && $config_path && $worker or croak 'Usage: simpici-dispatch --config FILE --worker NAME';
 my $config = JSON::MaybeXS->new->decode(path($config_path)->slurp_utf8);
+my $read_timeout = $config->{request_read_timeout} // 30;
+croak 'simpici-dispatch request_read_timeout must be a positive integer'
+  unless !ref $read_timeout && $read_timeout =~ /\A[1-9][0-9]*\z/;
 my $input = '';
-alarm 30;
-while (read(STDIN, my $chunk, 65536)) {
-  $input .= $chunk;
-  croak 'simpici-dispatch request too large' if length($input) > 8 * 1024 * 1024;
+{
+  # A sender that hangs must not hold a session for good. The handler only
+  # notes that the time is up: the read it interrupts returns, and the error
+  # is raised here, in one line like every other.
+  my $expired;
+  local $SIG{ALRM} = sub { $expired = 1 };
+  alarm $read_timeout;
+  while (1) {
+    my $read = sysread(STDIN, my $chunk, 65536);
+    croak 'simpici-dispatch request not read within '.$read_timeout.' s' if $expired;
+    next if !defined $read && $!{EINTR};
+    croak 'simpici-dispatch cannot read the request: '.$! unless defined $read;
+    last unless $read;
+    $input .= $chunk;
+    croak 'simpici-dispatch request too large' if length($input) > 8 * 1024 * 1024;
+  }
+  # The request is here. What follows waits for the queue and redacts a log
+  # of megabytes: it takes what it takes, and ending it in the middle would
+  # only make the worker send the same request again.
+  alarm 0;
 }
 my $queue = SimpiCI::Queue->new(
   store => SimpiCI::Store->new(root => path($config->{root})),
@@ -55,12 +74,54 @@ not lost to a configuration error.
 A claim leaves the secret values it handed out in C<claims/E<lt>runE<gt>.json>
 below the state root, in the clear, so that the log of the run can be
 redacted when it arrives. The file is removed once the completion is accepted
-and recorded. Every request, whichever it is and before anything else, removes
-the files of runs whose lease expired or that are completed, including those
-an earlier version left behind. A lease that expires while no worker connects
-keeps its file until the next request. A completion that finds no file for a
-run it can still complete is recorded with a log of one line saying that the
-log was withheld, see L<SimpiCI::Dispatcher/Secret snapshot of a claim>.
+and recorded. Every request, whichever it is and before anything else, marks
+the runs whose lease ran out as C<interrupted> and removes the files of runs
+whose lease expired or that are completed, including those an earlier version
+left behind. C<simpicid> in dispatcher mode does the same in every polling
+cycle, so a lease that expires while no worker connects is ended by the
+daemon; only where none runs does it wait for the next request. A completion
+that finds no file for a run it can still complete is recorded with a log of
+one line saying that the log was withheld, see
+L<SimpiCI::Dispatcher/Secret snapshot of a claim>.
+
+=head2 How long a request may take
+
+The request has to be read within 30 seconds, or within the seconds the
+top-level setting C<request_read_timeout> of the configuration gives. A
+sender that has not finished by then is given up:
+
+  simpici-dispatch request not read within 30 s at /usr/local/bin/simpici-dispatch line N.
+
+The program ends with another exit status than 0 and has done nothing: no
+lease is taken and nothing is recorded, so the worker sends the request
+again. The limit is one for the whole request, not for each piece of it, and
+it exists so that a connection that hangs does not hold a session and a
+process for good.
+
+Only the reading is limited. Once the request is complete, it is served to
+its end, however long that takes: the wait for the lock of the queue, which
+another request or the polling daemon may hold, the reading of a queue that
+has grown with its history, and the redaction of a log of up to 4 MiB. A
+limit there would end a completion that was already being recorded, and the
+worker would send the same completion again into the same limit.
+
+C<request_read_timeout> has to be a positive integer. Any other value ends
+every request before it is read:
+
+  simpici-dispatch request_read_timeout must be a positive integer at /usr/local/bin/simpici-dispatch line N.
+
+The setting is read for each request, like the rest of the configuration.
+
+=head2 A dispatcher that dies while it answers a claim
+
+The lease of a claim is saved before the claim is written to standard
+output. If the program is ended in between, or the connection breaks before
+the answer arrived, the run is leased and its worker does not know: the
+worker sees a request that failed and asks again, and gets the next queued
+run or nothing. The run is not handed out a second time. It stays C<running>
+until its lease is over and is then C<interrupted>, as every run whose
+worker was lost, see L<SimpiCI::Dispatcher/A claim that is leased but not
+delivered>.
 
 A request that was served is answered with one JSON object on standard
 output and the exit status 0. A completion that can never be accepted is
@@ -72,11 +133,11 @@ The reasons are C<unknown run>, C<stale claim> for a run claimed by another
 worker name or token, and C<expired claim> for a lease that is over. The
 worker takes this answer as final, stops sending the completion and keeps it
 aside. Every other failure, such as a configuration that cannot be read, a
-queue that cannot be locked or written, or a request that is not complete,
-ends the program with a message on standard error and another exit status
-than 0, and the worker sends the request again. An exit status alone never
-says that a completion was refused: C<ssh> uses 255 for a connection it
-could not make.
+queue that cannot be locked or written, or a request that is not complete or
+was not read in time, ends the program with a message on standard error and
+another exit status than 0, and the worker sends the request again. An exit
+status alone never says that a completion was refused: C<ssh> uses 255 for a
+connection it could not make.
 
 The clone URLs of the configuration are not checked here. This program reads
 no remote, and a queued event passed L<SimpiCI::Event> when it was enqueued;

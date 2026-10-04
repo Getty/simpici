@@ -96,13 +96,25 @@
     One event is one line on standard error of simpici-worker.
   - Worker and dispatcher redact with one function (SimpiCI::Role::Secrets):
     every occurrence of every assigned value, also where one value begins
-    another or two overlap; empty values do not break it. The dispatcher
-    removes claims/<run>.json once a completion is recorded, and each request
-    first removes the snapshots of expired and completed runs; a completion
-    without a snapshot is recorded with its log withheld. The worker removes
+    another or two overlap; empty values do not break it. A [REDACTED] marker
+    in a log is never searched for secret values, so the dispatcher's second
+    pass leaves the worker's markers alone, and the worker does not cut a log
+    in the middle of one; a secret value that contains [REDACTED] is
+    rejected. The dispatcher removes claims/<run>.json once a completion is
+    recorded; a completion without a snapshot is recorded with its log
+    withheld. The worker removes
     orphaned secrets/* before it contacts the dispatcher, and a claim whose
     secret is not one NAME=VALUE line fails the run with exit 125.
     SimpiCI::Queue gains leased.
+  - simpicid in dispatcher mode ends leases that ran out at the start of every
+    polling cycle, also with --once: the run becomes interrupted and its
+    secret snapshot is removed without a worker having to ask, and every
+    worker request does the same first. A claim that never reached its worker
+    ends that way too; deploy/README.md describes how to build such a commit
+    again.
+  - simpici-dispatch limits only the reading of a request (30 s, top-level
+    setting request_read_timeout); a request that was read is served to its
+    end, however long redaction takes.
   - A completion the dispatcher can never accept (unknown run, stale claim,
     expired claim) is answered with {"rejected": reason}. The worker moves it
     to rejected/<run>.json, names it in one line on standard error and claims

@@ -323,10 +323,21 @@ the complete plan.
   left where one value begins another or two of them overlap. This does not
   automatically detect other sensitive content in logs, or a value that a job
   prints encoded or split.
+- A `[REDACTED]` in the text is a marker, not output: no value is looked for
+  inside it or across one of its ends, so the dispatcher's pass over the log
+  the worker has redacted changes nothing, also for a value that is a piece
+  of the marker. A marker a job prints itself is left as it is for the same
+  reason. A value that contains the marker is refused as a secret, and the
+  worker cuts the log to its last 4 MiB without splitting a marker.
 - The dispatcher redacts from a snapshot of the claim's values that it keeps
   in `<root>/claims/<run>.json` until the completion is accepted, or until
-  the first worker request after the lease expired. A completion it has no
-  snapshot for is recorded with its log withheld.
+  the lease has expired and the next polling cycle of `simpicid`, or a
+  worker's request before it, ends it. A completion it has no snapshot for
+  is recorded with its log withheld.
+- A run whose lease expired becomes `interrupted` in that same step, with
+  no request of a worker needed, and is never run again by itself. A claim
+  that never reached its worker ends the same way, see
+  [Operations](../deploy/README.md#a-claim-that-never-reached-its-worker).
 - The worker's own copy of a log, `<root>/public/runs/<run>.log`, is not
   redacted and exists only while the run lasts. The worker removes it as
   soon as the completion with the redacted log is saved, together with the

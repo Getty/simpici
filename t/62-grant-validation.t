@@ -19,6 +19,9 @@ my $empty = $root->child('empty-token');
 $empty->spew_utf8("\n");
 my $two_lines = $root->child('two-lines');
 $two_lines->spew_utf8("leaky-alpha\nleaky-beta\n");
+# What is pasted from a published log instead of the value.
+my $marked = $root->child('marked-token');
+$marked->spew_utf8("leaky-prefix[REDACTED]leaky-suffix\n");
 my $missing = $root->child('no-such-token');
 
 sub grant {
@@ -71,7 +74,9 @@ for my $case (
   [{file => "$missing"}, qr/cannot read secret file \Q$missing\E: No such file/, 'missing secret file'],
   [{file => undef}, qr/secret file missing/, 'grant without a file'],
   [{file => "$empty"}, qr/secret must be one nonempty line/, 'empty secret file'],
-  [{file => "$two_lines"}, qr/secret must be one nonempty line/, 'secret file with two lines']
+  [{file => "$two_lines"}, qr/secret must be one nonempty line/, 'secret file with two lines'],
+  [{file => "$marked"}, qr/secret must not contain \[REDACTED\], the marker of a redacted value/,
+    'secret that holds the redaction marker']
 ) {
   my ( $override, $reason, $label ) = @$case;
   like dies { dispatcher_for(grant(), grant(%$override))->validate },
@@ -91,6 +96,8 @@ like dies { dispatcher_for('CICD_PACKAGE_TOKEN')->validate },
   'reject a grant that is no object';
 unlike dies { dispatcher_for(grant(file => "$two_lines"))->validate }, qr/leaky/,
   'a rejected secret file does not leak its content';
+unlike dies { dispatcher_for(grant(file => "$marked"))->validate }, qr/leaky/,
+  'nor does one that is rejected for the marker in it';
 
 #### Reserved names follow the executor
 

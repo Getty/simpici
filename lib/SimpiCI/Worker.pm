@@ -293,7 +293,7 @@ sub _completion {
     $log .= "\n" if length $log && $log !~ /\n\z/;
     $log .= $aborted."\n";
   }
-  $log = substr($self->redact($log, $claim->{secrets}), -4 * 1024 * 1024);
+  $log = $self->redacted_tail($self->redact($log, $claim->{secrets}), 4 * 1024 * 1024);
   my $request = {
     operation => 'finish', run => $claim->{run}, token => $claim->{token},
     result => { state => $report->{state}, exit_code => $report->{exit_code} },
@@ -517,8 +517,9 @@ executor passes each file to the jobs of its phase. Every secret of the claim,
 in whichever phase, has to be such a line: a name
 L<SimpiCI::Role::Secrets/secret_name_valid> accepts and a value
 L<SimpiCI::Role::Secrets/secret_value_valid> accepts. An undefined value, a
-reference, an empty value and a value with a line end are refused, like a name
-that would not be a variable of its own. The reasons are
+reference, an empty value, a value with a line end and a value that contains
+the redaction marker are refused, like a name that would not be a variable of
+its own. The reasons are
 C<invalid secret name in claim> and C<invalid secret value in claim>, which
 name neither the secret nor its value. The dispatcher grants nothing
 else, so such a claim comes from a dispatcher of another version or is not
@@ -526,7 +527,10 @@ what the dispatcher sent.
 
 The log is redacted by L<SimpiCI::Role::Secrets/redact> with every value of
 the claim before it is saved as the completion; the dispatcher redacts it
-again with its own copy of them. The log of the run below C<public/runs> in
+again with its own copy of them. The completion carries the last 4 MiB of
+the redacted log, cut by L<SimpiCI::Role::Secrets/redacted_tail> so that no
+marker is split: the second pass leaves a marker alone, but not what is left
+of one. The log of the run below C<public/runs> in
 the store of the worker is what the jobs wrote, unredacted, and is removed
 as soon as the completion is saved, see L</What a run leaves>.
 
