@@ -1,0 +1,31 @@
+---
+claimed_at: 2026-10-04T05:48:24Z
+claimed_by: simpici
+class: standard
+completed: 2026-10-04T05:48:24Z
+created: 2026-10-04T04:37:09Z
+id: 22
+priority: high
+started: 2026-10-04T05:48:24Z
+status: done
+tags:
+- secrets
+- worker
+- dispatcher
+- security
+title: 'Secret-Hygiene: Schwärzung überlappender Secrets, liegengebliebene Secret-Dateien,
+  claims/N.json im Klartext'
+updated: 2026-10-04T05:48:24Z
+---
+
+Befunde aus k20 (2026-10-04): (A) Worker schwärzt in Hash-Reihenfolge, Dispatcher längste zuerst (Dispatcher.pm ~174): ist ein Secret Anfang eines anderen, bleibt je nach Reihenfolge ein Rest stehen (per Wegwerf-Skript belegt). Beide Stellen: längste zuerst, eine gemeinsame Funktion. (B) Ein getöteter Worker lässt secrets/N liegen; beim Neustart räumt nichts auf (Worker.pm ~41-46): beim Start verwaiste secrets/* entfernen. (C) claims/N.json auf dem Dispatcher enthält Secret-Werte im Klartext und wird nie gelöscht, auch nicht nach angenommenem finish (Dispatcher.pm ~163, 171-177): nach angenommenem finish (und bei Ablauf/interrupted) löschen; nur so lange halten, wie die Schwärzung es braucht. (F) Secret-Wert undef oder Referenz wird vom Worker nicht abgelehnt (schreibt NAME= bzw. NAME=HASH(...)): ablehnen. Tests je Punkt.
+
+2026-10-04 05:31 Tests zuerst geschrieben und rot gesehen (vor jeder Implementierung): t/64-redaction.t 3/3 Subtests rot (Worker: 'prefixN-and-the-rest' bleibt als '[REDACTED]-and-the-rest' stehen; 'abcd'+'cdef' in 'abcdef' -> '[REDACTED]ef'; Dispatcher: leerer Wert im Snapshot zerlegt das ganze Log in '[REDACTED]a[REDACTED] ...'); t/63-claim-snapshot.t 10/10 Subtests rot (Snapshot bleibt nach finish/Ablauf liegen; fehlt er bei laufendem Lease, wird das Log ungeschwärzt veröffentlicht); t/72-worker-orphaned-secrets.t 6/6 rot (auch mit echtem SIGKILL auf bin/simpici-worker); t/73-worker-secret-values.t 111 von 144 rot (undef/Referenz/leer/mehrzeilig wird ausgeführt und als NAME=... geschrieben).
+
+2026-10-04 05:46 Entscheidungen (k22): (A) Eine Funktion redact in der neuen Rolle SimpiCI::Role::Secrets, von Worker und Dispatcher komponiert. Bewusst NICHT nacheinander längste-zuerst ersetzt, sondern alle Vorkommen aller Werte im Originaltext markiert und die Vereinigung ersetzt: reihenfolgeunabhängig, deckt den Präfix-Fall der Karte und zusätzlich Teilüberlappung (abcd+cdef in abcdef) und Selbstüberlappung (aa in aaa), die längste-zuerst stehen lässt. Überlappende/angrenzende Werte ergeben EINEN Marker. Leere, undefinierte und Referenz-Werte werden ignoriert. Suche auf UTF-8-Bytes (Zeichenpositionen waren quadratisch: 256 KiB UTF-8-Log 28 s, jetzt 4 MiB in 0,2-2 s). (B) Aufräumen am Anfang jedes once, also bei jedem Start und jedem Zyklus, vor jeder Dispatcher-Anfrage; alles unter secrets/ wird entfernt, je Eintrag eine Zeile auf stderr; nicht entfernbar = croak, Worker nimmt dann keine Arbeit an (fail closed). (C) Lebensdauer von claims/N.json an neues SimpiCI::Queue->leased gebunden: Löschen erst nach veröffentlichtem Log UND gespeichertem Ergebnis; jede Anfrage (claim wie finish) räumt zuerst, noch vor der Grant-Prüfung, die Snapshots aller nicht mehr geleasten Läufe ab (abgelaufen, fertig, Altbestand früherer Versionen, unfertige .tmp-Dateien); fremde Dateien in claims/ bleiben. Fehlt der Snapshot bei einem noch annehmbaren finish, wird das Ergebnis gespeichert und das Log durch eine Zeile ersetzt (withheld) statt ungeschwärzt veröffentlicht. Snapshot wird auch für Claims ohne Secrets geschrieben. KEIN Aufräumen durch den Poller. (F) Worker lehnt vor dem Schreiben jeder Datei ab: Wert nicht eine nichtleere Zeile (undef, Referenz, leer, CR/LF/NUL) und Name nicht in Grant-Form; Gründe invalid secret name/value in claim zitieren nichts; gleiche Regeln wie der Dispatcher, jetzt an einer Stelle in der Rolle.
+
+2026-10-04 05:46 Also found (nicht umgesetzt, für das Board simpici): (1) Lease-Ablauf wird nur bei einer Worker-Anfrage bemerkt; ohne Worker bleibt der Lauf running und sein claims/N.json liegen. Ein Ablauf-Schritt im Poller (simpicid, Dispatcher-Modus) würde beides beheben. (2) Der Worker behält unter seinem root public/runs/N.log ungeschwärzt sowie work/ und tmp/ ohne jede Aufbewahrungsgrenze. (3) Ein getöteter Worker lässt Executor-Prozessgruppe und Container mit den Secrets in der Umgebung weiterlaufen; KillMode=control-group erfasst über den Docker-Daemon gestartete Container nicht. (4) Ein Secret, das Teilstring von [REDACTED] ist (z. B. RED), wird im zweiten Durchgang des Dispatchers im Marker des Workers ersetzt und so erkennbar. (5) simpici-dispatch setzt alarm 30 vor dem Lesen und hebt ihn nie auf: er begrenzt die ganze Anfrage inkl. Schwärzung und Queue-Arbeit (_save liest alle Queue-Dateien, wächst mit der Historie). Gemessener Schwärzungs-Extremfall: 4 MiB nur aus einem 1000 Zeichen langen Ein-Buchstaben-Secret ca. 14 s; mit dem regulären Worker kommt das beim Dispatcher nie an. (6) Stirbt der Dispatcher zwischen gespeichertem Lease und Antwort, wird der Lauf nie ausgeführt und endet interrupted. (7) t/00-load.t lädt Dispatcher, Queue, Worker und die neue Rolle nicht. (8) Kein Modul unter lib/ trägt our $VERSION; die neue Rolle folgt dem Bestand.
+
+2026-10-04 05:46 Done: A/B/C/F umgesetzt, nichts committet, Changes unberührt. Neu: lib/SimpiCI/Role/Secrets.pm (redact, secret_values, secret_name_valid, secret_value_valid), t/63-claim-snapshot.t, t/64-redaction.t, t/72-worker-orphaned-secrets.t, t/73-worker-secret-values.t (alle im Index). Geändert: lib/SimpiCI/Dispatcher.pm (Rolle, remove_stale_snapshots, Löschen nach angenommenem finish, withheld-Log), lib/SimpiCI/Queue.pm (leased, POD), lib/SimpiCI/Worker.pm (Rolle, remove_orphaned_secrets, Secret-Prüfung), bin/simpici-dispatch und bin/simpici-worker (POD), README.md, deploy/README.md, docs/executor.md, t/90-transport.t (prüfte bisher den liegenbleibenden Snapshot). Verifiziert: jeder der vier neuen Tests vorher rot gesehen, danach grün; prove -lr t/ = 27 Dateien, 884 Tests, PASS; podchecker auf allen geänderten POD-Dateien OK; Wegwerf-Stresslauf mit 6 parallelen Prozessen über 60 Läufe, jedes finish doppelt: 0 Fehler, 60 Logs geschwärzt, 0 zurückgehalten, claims/ leer. Kein dzil test (Vorgabe).
+
+2026-10-04 05:48 Committed as 8a311d6
