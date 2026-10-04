@@ -38,20 +38,18 @@ sub poll {
   my ( $self, $observed ) = @_;
 
   my $repository = $self->repository;
-  my $identity = sha256_hex(join "\0", $repository->{name}, $repository->{clone_url});
-  my $state_path = $self->store->root->child(
-    'state', 'repositories', $identity.'.json'
-  );
-  my $previous = $state_path->is_file
-    ? JSON::MaybeXS->new->decode($state_path->slurp_utf8) : {};
+  my $recorded = $self->_recorded;
   $observed //= $self->observe;
+  my $rejection = $self->rejection($observed);
+  croak __PACKAGE__.' '.$rejection if defined $rejection;
+  my $previous = $recorded // {};
   my @reports;
 
   for my $ref (sort keys $observed->%*) {
     my $commit = $observed->{$ref};
     my $old = $previous->{$ref};
     next if defined $old && $old eq $commit;
-    next unless defined $old || $state_path->is_file || $repository->{build_initial};
+    next unless defined $old || $recorded || $repository->{build_initial};
     push @reports, $self->runner->run(SimpiCI::Event->new(
       source     => 'git-poll',
       event      => 'push',
@@ -61,10 +59,36 @@ sub poll {
       commit     => $commit
     ));
   }
-  $self->store->write_json(
-    'state/repositories/'.$identity.'.json', $observed
-  );
+  $self->store->write_json($self->_state_file, $observed);
   return \@reports;
+}
+
+sub rejection {
+  my ( $self, $observed ) = @_;
+
+  # A reachable remote without one usable ref says nothing about the recorded
+  # tips: saved, it would make every one of them new once they are back.
+  return if $observed->%*;
+  my $recorded = keys( ( $self->_recorded // {} )->%* );
+  return unless $recorded;
+  return 'remote returned no refs, keeping recorded tips: '.$recorded.' in '
+    .$self->_state_file;
+}
+
+sub _state_file {
+  my ( $self ) = @_;
+
+  my $repository = $self->repository;
+  return 'state/repositories/'
+    .sha256_hex(join "\0", $repository->{name}, $repository->{clone_url}).'.json';
+}
+
+sub _recorded {
+  my ( $self ) = @_;
+
+  my $state_path = $self->store->root->child($self->_state_file);
+  return unless $state_path->is_file;
+  return JSON::MaybeXS->new->decode($state_path->slurp_utf8);
 }
 
 sub observe {
@@ -119,8 +143,9 @@ SimpiCI::Source::GitPoll - poll configured Git refs for SimpiCI
 
 Reads the configured remote refs once with C<git ls-remote> and returns a hash
 reference of ref names to commit ids. Croaks with the text git printed when
-the remote cannot be read. Nothing is persisted, and the call has no timeout
-of its own.
+the remote cannot be read. A remote that answers without a usable ref yields
+an empty hash; whether that is acceptable is for L</rejection> to say. Nothing
+is persisted, and the call has no timeout of its own.
 
 =head2 poll
 
@@ -130,7 +155,28 @@ of its own.
 Compares an observation with persisted state, runs accepted changes, saves the
 observation, and returns an array reference of generated reports. Without an
 argument it calls L</observe> itself, so an unreadable remote croaks before
-anything is run or saved. A caller that has to tell an unreadable remote from
-a failing run observes first and passes the result.
+anything is run or saved. An observation that L</rejection> refuses croaks at
+the same point, with that reason. A caller that has to tell an unusable
+observation from a failing run observes first, asks for the rejection and
+only then passes the result.
+
+=head2 rejection
+
+  my $reason = $poller->rejection($observed);
+
+Returns why an observation must not replace the recorded tips, or nothing if
+it may. The one reason is an observation without refs while tips are
+recorded:
+
+  remote returned no refs, keeping recorded tips: 2 in state/repositories/<id>.json
+
+Exit status 0 with nothing to show is what C<git ls-remote> gives for a
+reachable repository that has none of the configured refs, such as a mirror
+before its synchronisation. Saved, it would turn every recorded tip into a
+new one on its return, tags that were never built included. Without recorded
+tips the same observation is acceptable: it is the baseline of a repository
+that has no matching ref yet. The path is relative to the store root; removing
+that file is how an operator accepts that the refs are gone for good. Reads
+the recorded tips and croaks if they cannot be decoded.
 
 =cut

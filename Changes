@@ -5,13 +5,14 @@
   - Poll GitHub and Forgejo mirrors with independent observations, including
     newly appearing refs after initial polling. Shared durable run
     deduplication is provided by the dispatcher queue. A repository whose refs
-    cannot be read (git ls-remote fails) does not stop simpicid: it logs one
-    "not polled" line naming the repository, its clone URL (without HTTP
-    credentials) and the git error, polls the remaining repositories, leaves
-    the recorded tips untouched and tries again in the next cycle.
-    simpicid --once polls every repository and exits with 1 if one could not
-    be read. SimpiCI::Source::GitPoll offers observe; poll accepts an
-    observation.
+    cannot be read (git ls-remote fails), or that returns none of the
+    configured refs while tips are recorded for it, does not stop simpicid: it
+    logs one "not polled" line naming the repository, its clone URL (without
+    HTTP credentials) and the reason, polls the remaining repositories, keeps
+    the recorded tips and tries again in the next cycle, so refs that return
+    are not built as new. simpicid --once polls every repository and exits
+    with 1 if one was not polled. SimpiCI::Source::GitPoll offers observe and
+    rejection; poll accepts an observation.
   - Dispatch durable leased jobs to outbound SSH workers, with fenced recovery
     and idempotent completion upload through a restricted worker protocol.
   - Scope dispatcher secret files to repositories, refs, events and publish or

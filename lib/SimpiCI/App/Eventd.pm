@@ -58,11 +58,14 @@ sub run {
         runner     => $runner,
         repository => $repository
       );
-      # Only an unreadable remote is survivable: it changes no state, and the
-      # next cycle reads it again. A failing run or queue still ends the daemon.
+      # Only the observation is survivable: a remote that is unreadable or
+      # returns no refs changes no state, and the next cycle reads it again. A
+      # failing run or queue still ends the daemon, and so do recorded tips
+      # that cannot be read: the rejection is asked for outside the eval.
       my $observed = eval { $poller->observe };
-      unless ($observed) {
-        warn $class->unread_message($repository, $@);
+      my $unpolled = $observed ? $poller->rejection($observed) : $@;
+      if (defined $unpolled) {
+        warn $class->unread_message($repository, $unpolled);
         $status = 1;
         next;
       }
@@ -120,7 +123,21 @@ The line carries the text C<git ls-remote> printed and repeats in every cycle
 until the repository is readable again. The recorded tips of that repository
 stay as they are, so nothing is built merely because it is back; a repository
 that was never read gets its first observation then, subject to
-C<build_initial>. Only reading the refs is covered: a run that cannot be
+C<build_initial>.
+
+A repository that answers without any of the configured refs while tips are
+recorded for it is treated the same way, with its own reason:
+
+  simpicid: repository owner/project (https://example/owner/project.git) not polled: remote returned no refs, keeping recorded tips: 2 in state/repositories/<id>.json
+
+This is what a mirror gives before it is synchronised, and it must not turn
+its recorded tips into new ones. If the refs are gone for good, remove the
+repository from the configuration or delete the named file below the state
+root; the empty answer then becomes the baseline. A repository without
+recorded tips is not reported: its empty answer is that baseline, and refs
+that appear afterwards are built.
+
+Nothing beyond the observation is covered: a run that cannot be
 started, an unwritable queue or state root, and an unusable grant still end
 the daemon. C<git ls-remote> runs without a timeout, so a remote that hangs
 holds up the whole cycle.
@@ -137,15 +154,16 @@ Class used to check the grants in dispatcher mode.
 
 Runs the daemon with an explicit argument list and returns its process exit
 status when C<--once> is used or the loop otherwise ends: 1 if a repository
-could not be read, 0 otherwise.
+was not polled, 0 otherwise.
 
 =head2 unread_message
 
   warn SimpiCI::App::Eventd->unread_message($repository, $reason);
 
-Formats the single log line for a repository whose refs could not be read.
-Credentials in an HTTP or HTTPS clone URL are left out, also where the reason
-repeats that URL.
+Formats the single log line for a repository that was not polled, be it that
+its refs could not be read or that L<SimpiCI::Source::GitPoll/rejection>
+refused what was read. Credentials in an HTTP or HTTPS clone URL are left out,
+also where the reason repeats that URL.
 
 =head1 OPTIONS
 
@@ -160,7 +178,8 @@ Required JSON configuration. See C<etc/simpici.example.json>.
 Poll every configured repository once and exit instead of sleeping. A normally
 completed poll returns zero even if a local build failed; inspect the run
 reports for build status. The exit status is 1 if the refs of a repository
-could not be read; the other repositories are polled all the same.
+could not be read, or if it returned none while tips are recorded for it; the
+other repositories are polled all the same.
 
 =item B<--runner> I<file>
 

@@ -92,6 +92,26 @@ that is valid today. Important details:
 - An unreadable repository keeps its recorded tips, so its return alone
   builds nothing. A repository that has never been read has no baseline yet:
   its first successful poll is the initial one, and `build_initial` decides.
+- A repository that answers, but with none of the configured refs, is not
+  polled either while tips are recorded for it. `git ls-remote` reports this
+  as success with empty output; a mirror does it before its synchronisation.
+  The line names the state it keeps instead of a git error:
+
+  ```text
+  simpicid: repository acme/example (https://github.com/acme/example.git) not polled: remote returned no refs, keeping recorded tips: 2 in state/repositories/<id>.json
+  ```
+
+  Saving the empty answer would make every tip new on its return, including
+  tags that were never built and would then receive what a `refs/tags/*`
+  grant gives. The line and the exit status 1 of `--once` repeat as long as
+  the answer stays empty. If the refs are gone for good, remove the repository
+  from the configuration, or delete the named file below `root` to accept the
+  empty state as the new baseline.
+- This guards recorded tips only. A repository that is empty at its **first**
+  poll gets an empty baseline without a log line, and every ref that appears
+  later is built, whatever `build_initial` says: add a mirror after its first
+  synchronisation. A repository that loses only some of its refs forgets
+  those and treats them as new if they come back.
 - Only reading the refs is tolerated. A run that cannot be started, an
   unwritable state root or queue, and an unusable grant end the daemon as
   before. The ref query has no timeout: a remote that neither answers nor
@@ -306,7 +326,9 @@ of JSON under a lock, not renames between `queued` and `running` directories.
 Queue deduplication is based on `repository NUL ref NUL commit` and applies
 across sources and mirrors. Polling observations, in contrast, are separate
 for each repository and clone URL. Use different logical repository names for
-independent mirror runs.
+independent mirror runs. A mirror that is reachable but temporarily without
+refs keeps its recorded tips; section 2 describes the log line and the limits
+of that rule.
 
 Claims expire after the configured execution timeout plus 30 minutes for
 checkout and transfer. On the next claim, expired work is marked
@@ -390,8 +412,10 @@ A repository the poller cannot read, such as one whose organization does not
 exist on the forge yet, no longer restarts the container. The poller logs a
 `not polled` line for it in every cycle, keeps polling the others and picks
 the repository up once it is readable; section 2 describes the line and what
-is built then. Look for these lines in `docker compose logs poller`: nothing
-else reports a repository that is never read.
+is built then. A repository that exists but returns no refs while tips are
+recorded for it gets such a line as well. Look for these lines in
+`docker compose logs poller`: nothing else reports a repository that is never
+read.
 
 On the worker, name the port in `~/.ssh/config` of the account that runs
 `simpici-worker`, because `--dispatcher` takes no port:
