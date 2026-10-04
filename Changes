@@ -14,6 +14,11 @@
   - Discover repository jobs from their filenames, execute them in selected
     containers and enforce ordered phase barriers with bounded same-phase
     concurrency (default 2).
+  - Expose the artifacts of earlier phases to later jobs: every job gets
+    CICD_INPUTS=/inputs with <phase>/<job>/ of each earlier phase mounted
+    read-only. Jobs of the same phase never see each other, a job that wrote
+    nothing leaves an empty directory, and nothing is transferred between
+    workers or to the dispatcher. CICD_INPUTS is reserved as a secret name.
   - Merge repository jobs and provider-generated jobs in a writable staging
     directory: operator-selected provider images (SIMPICI_PROVIDERS, exposed as
     the reusable workflow's "provider" input) generate additional .cicd/*.sh

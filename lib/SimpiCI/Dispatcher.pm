@@ -36,7 +36,7 @@ sub _secrets {
       next if $secret->{sources} && !grep { $_ eq $event->{source} } $secret->{sources}->@*;
       croak __PACKAGE__.' invalid secret name'
         unless ($secret->{name} // '') =~ /\A(?:CICD_[A-Z0-9_]+|[A-Z][A-Z0-9_]*_TOKEN)\z/
-        && $secret->{name} !~ /\ACICD_(?:WORKSPACE|ROOT|OUTPUT|ARTIFACTS|EVENT_FILE|COMMIT|REF|SOURCE|EVENT|REPOSITORY|CLONE_URL|PHASE|JOB|IMAGE_REF|RUN_NUMBER)\z/;
+        && $secret->{name} !~ /\ACICD_(?:WORKSPACE|ROOT|OUTPUT|ARTIFACTS|INPUTS|EVENT_FILE|COMMIT|REF|SOURCE|EVENT|REPOSITORY|CLONE_URL|PHASE|JOB|IMAGE_REF|RUN_NUMBER)\z/;
       my $value = path($secret->{file})->slurp_utf8;
       $value =~ s/\r?\n\z//;
       croak __PACKAGE__.' secret must be one nonempty line' if !length($value) || $value =~ /[\r\n\0]/;

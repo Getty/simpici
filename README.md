@@ -220,7 +220,8 @@ or automatically override the image's `ENTRYPOINT`.
 | `$CICD_WORKSPACE` | Read-only checkout; also the job's working directory |
 | `$CICD_ROOT` | Effective `.cicd` job plan, including provider files |
 | `$CICD_OUTPUT` | This job's private, writable working directory |
-| `$CICD_ARTIFACTS` | This job's private, writable artifact directory |
+| `$CICD_ARTIFACTS` | This job's writable artifact directory; later phases read it through `$CICD_INPUTS` |
+| `$CICD_INPUTS` | Read-only artifacts of earlier phases: `$CICD_INPUTS/<phase>/<job>/` |
 
 Many tools write into the project directory. Before running `npm ci`,
 `cargo test`, `dzil test` or similar commands, copy the checkout:
@@ -230,11 +231,15 @@ cp -a "$CICD_WORKSPACE"/. "$CICD_OUTPUT/src"
 cd "$CICD_OUTPUT/src"
 ```
 
-**Output and artifacts are currently private to each job.** A `deploy` job
-does not automatically see a previous `package` job's artifacts. Automatic
-uploads and artifact transfer between worker and dispatcher are not available
-either. Keep `RUNNER_TEMP` and `TMPDIR` outside the checkout so copies and
-archives do not accidentally include their own temporary output.
+**Artifacts flow forward, phase by phase.** A job sees the artifacts of every
+job from an *earlier* phase under `$CICD_INPUTS/<phase>/<job>/`, read-only.
+Jobs of the same phase do not see each other, and `$CICD_OUTPUT` stays private.
+A job that wrote nothing, such as a skipped one, leaves an empty directory, and
+in the first phase that has jobs `$CICD_INPUTS` does not exist at all, so check
+for the file you need. This works within one run on one machine; there is no
+upload to the dispatcher and no transfer between workers. Keep `RUNNER_TEMP`
+and `TMPDIR` outside the checkout so copies and archives do not accidentally
+include their own temporary output.
 
 See the [executor reference](docs/executor.md) for job variables, executor
 settings and status details.
@@ -286,8 +291,9 @@ tar --exclude=./.git -czf "$CICD_ARTIFACTS/source.tar.gz" \
   -C "$CICD_WORKSPACE" .
 ```
 
-The file ends up in **this job's** artifact directory. This example deliberately
-does not promise an automatic download link or access from another job.
+The file ends up in **this job's** artifact directory. A `publish` or `deploy`
+job of the same run reads it as `$CICD_INPUTS/package/source/source.tar.gz`.
+There is no automatic download link.
 
 ### Deliberately skip a job
 

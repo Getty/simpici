@@ -20,8 +20,9 @@ chmod +x .cicd/*.sh
 - Dependencies are installed within the job. Other jobs do not inherit that
   installation. A custom build image tag can avoid repeated installation,
   but does not replace deliberate version management.
-- Output and artifacts are private to each job. They are not automatically
-  mounted in a later job.
+- Output is private to each job. Artifacts are mounted read-only into jobs of
+  later phases under `$CICD_INPUTS/<phase>/<job>/`, never into jobs of the
+  same phase.
 - Project code and dependency hooks are executable code. Untrusted runs
   need isolated runners without production credentials.
 
@@ -179,10 +180,20 @@ tar --exclude=./.git -czf "$CICD_ARTIFACTS/source.tar.gz" \
   -C "$CICD_WORKSPACE" .
 ```
 
-The archive is saved in this job's private artifact directory. For generated
-files, the same job must first generate them and then save them there.
-A later deploy job cannot simply read this job's artifact directory.
-Hosted uploads and worker transfers need an explicit transport solution
+The archive is saved in this job's artifact directory. A job of a later phase
+in the same run reads it read-only through `$CICD_INPUTS`; a job of the same
+phase does not see it. File: `.cicd/linux+publish.source.sh`.
+
+```sh
+#!/bin/sh
+set -eu
+archive="$CICD_INPUTS/package/source/source.tar.gz"
+[ -f "$archive" ] || { echo "package/source left no archive" >&2; exit 1; }
+tar -tzf "$archive" >/dev/null
+```
+
+Check for the file: the directory of a skipped `package` job exists but is
+empty. Hosted uploads and worker transfers need an explicit transport solution
 that is set up separately.
 
 ## 9. Building a container and publishing it with guards

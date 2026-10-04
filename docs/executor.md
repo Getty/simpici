@@ -102,7 +102,8 @@ environment variables do not automatically become job variables either.
 | `CICD_WORKSPACE` | Read-only checkout and working directory |
 | `CICD_ROOT` | Effective read-only job plan, including provider files |
 | `CICD_OUTPUT` | Writable working directory for this job alone |
-| `CICD_ARTIFACTS` | Writable artifact directory for this job alone |
+| `CICD_ARTIFACTS` | Writable artifact directory of this job; jobs of later phases read it through `CICD_INPUTS` |
+| `CICD_INPUTS` | Always `/inputs`; holds `<phase>/<job>/` for each job of an earlier phase, read-only. The directory is absent in the first phase that has jobs |
 
 Only `publish` and `deploy` jobs receive the registry variables
 `CICD_REGISTRY`, `CICD_REGISTRY_USER`, `CICD_REGISTRY_PASSWORD` and
@@ -133,7 +134,7 @@ barrier to publishing.
 | `prepare` | 1 | Preliminary checks; no shared persistent job environment |
 | `build` | 2 | Before tests; an available Docker socket is mounted |
 | `test` | 3 | Before package and publish |
-| `package` | 4 | No automatic access to build-phase outputs |
+| `package` | 4 | Reads earlier artifacts through `CICD_INPUTS` |
 | `publish` | 5 | Registry handoff; an available Docker socket is mounted |
 | `deploy` | 6 | Registry handoff, but no automatic Docker socket mount |
 
@@ -192,8 +193,15 @@ the complete plan.
 
 ## Limits of output, logs and reports
 
-- Job output and job artifacts are separate and private. Neither later jobs
-  nor another worker receive them automatically.
+- Job output is private. Job artifacts are readable by jobs of later phases of
+  the same run through `CICD_INPUTS`, never by jobs of the same phase or by
+  another worker.
+- `CICD_INPUTS/<phase>/` exists only for an earlier phase that had jobs, and
+  `CICD_INPUTS/<phase>/<job>/` is the complete `CICD_ARTIFACTS` of that job. A
+  job that wrote nothing, such as one skipped with exit `78`, leaves an empty
+  directory; a later job must check for the file it needs instead of assuming
+  it. A failed phase stops the run, so a later phase never reads the artifacts
+  of a failed job.
 - There is no built-in hosted artifact upload or artifact transfer back from
   the worker to the dispatcher.
 - Native local logs are written unfiltered. Removing private fields from a

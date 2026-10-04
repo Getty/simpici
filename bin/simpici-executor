@@ -180,6 +180,7 @@ run_job() {
     -e "CICD_IMAGE_REF=$image" -e "CICD_IMAGE_REPOSITORY=${CICD_IMAGE_REPOSITORY:-}"
     -e CICD_WORKSPACE=/workspace -e CICD_EVENT_FILE=/run/simpici/event.json
     -e CICD_ROOT=/cicd -e CICD_OUTPUT=/output -e CICD_ARTIFACTS=/artifacts
+    -e CICD_INPUTS=/inputs
   )
   if [[ "$phase" == publish || "$phase" == deploy ]]; then
     environment+=(
@@ -196,6 +197,14 @@ run_job() {
     -v "$event_host:/run/simpici/event.json:ro"
     -v "$output_host:/output" -v "$artifacts_host:/artifacts"
   )
+  # Artifacts of every earlier phase, read-only. The current phase is left out:
+  # its jobs run concurrently and would see each other half-written.
+  local earlier
+  for earlier in "${phases[@]}"; do
+    [[ "$earlier" == "$phase" ]] && break
+    [[ -d "$action_temp/artifacts/$earlier" ]] || continue
+    mounts+=( -v "$action_temp/artifacts/$earlier:/inputs/$earlier:ro" )
+  done
   local docker_socket=/var/run/docker.sock
   if [[ "${DOCKER_HOST:-}" == unix://* ]]; then
     docker_socket="${DOCKER_HOST#unix://}"
