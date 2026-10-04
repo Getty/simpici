@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-10-04T01:11:44Z
+claimed_by: simpici
+class: standard
+completed: 2026-10-04T01:11:44Z
+created: 2026-10-04T01:00:32Z
+id: 9
+priority: high
+started: 2026-10-04T01:11:44Z
+status: done
+tags:
+- executor
+title: 'CICD_INPUTS: Artefakte früherer Phasen read-only für spätere Jobs'
+updated: 2026-10-04T01:11:44Z
+---
+
+Plan: /home/getty/dev/perl-developer/docs/superpowers/plans/2026-10-02-simpici-deb-voraussetzungen.md, Task 2. Spec: /home/getty/dev/perl-developer/docs/superpowers/specs/2026-10-02-deb-pakete-simpici-design.md. Jobs sehen heute nur ihr eigenes CICD_ARTIFACTS. Neu: CICD_INPUTS=/inputs, darunter <phase>/<job>/ jeder früheren Phase read-only; eigene Phase nie. CICD_INPUTS als Secret-Name sperren. Fertig: t/81-executor-inputs.t grün, README.md + docs/executor.md angepasst.
+
+2026-10-04 01:09 Red run confirmed (t/81-executor-inputs.t, 2 of 3 fail): trace shows all four jobs ran and the skip job exits 78, but CICD_INPUTS is empty and no /inputs mounts exist; secret name CICD_INPUTS is still accepted. Parser check: linux+build.sh -> job 'linux', linux+build.skip.sh -> job 'skip', as the plan test assumes. Deviation from the plan test: the docker stub also lists each job directory's files (linux[marker]skip[]), so the 'skipped job leaves an empty directory' claim is actually asserted, not only the directory's existence.
+
+2026-10-04 01:10 Also found (not changed, outside this card): (1) Skill .claude/skills/simpici-core/SKILL.md line 36 still says 'There is no automatic cross-job artifact transfer' — now wrong for later phases of the same run; needs a skill edit via the hardlink-preserving route. (2) The reserved secret-name list in lib/SimpiCI/Dispatcher.pm does not cover CICD_BRANCH, CICD_TAG or CICD_IMAGE_REPOSITORY although the executor sets them for every job; a grant with such a name is accepted today. (3) Not verified with real Docker: artifact directories are created by the executor under umask 077, so a job image running as a non-root user with another UID can presumably neither write /artifacts nor read /inputs — same limitation as before, now also on the read side.
+
+2026-10-04 01:10 Done: bin/simpici-executor run_job sets CICD_INPUTS=/inputs for every job and mounts $action_temp/artifacts/<earlier phase> read-only at /inputs/<phase> for each earlier phase that had jobs (own phase never). lib/SimpiCI/Dispatcher.pm reserves CICD_INPUTS as a secret name. New t/81-executor-inputs.t (untracked, to be added): red before (no env value, no mounts, secret name accepted), green after; prove -lr t/ = 12 files, 90 tests, PASS. Docs: README.md, docs/executor.md as planned; additionally docs/cookbook.md (general note + recipe 8) and the README source-archive recipe, which still claimed artifacts are unreadable from other jobs. Deviations from plan: test stub also asserts the skipped job's directory is empty; doc wording says 'a job that wrote nothing, such as a skipped one, leaves an empty directory' (a job may write artifacts and then exit 78); docs/cookbook.md touched although not in the plan's file list. Changes untouched, nothing committed. Proposed subject: Expose artifacts of earlier phases as CICD_INPUTS
+
+2026-10-04 01:11 Committed: 20c56c1
