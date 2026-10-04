@@ -49,4 +49,13 @@ with a fixed config and worker identity and disable all SSH forwarding.
 A local lock prevents overlapping worker processes. Completed work is saved
 before upload and retried without rebuilding when the connection fails.
 
+A claim the worker cannot execute, such as an event it refuses, is reported
+to the dispatcher as a failed run with exit code 125. The reason is the last
+line of the uploaded log and is also written to standard error:
+
+  SimpiCI::Worker run 7 aborted: SimpiCI::Event ref must start with refs/ at ...
+
+No secret file is written for a refused event, and the secret files of a run
+are removed whichever way it ends.
+
 =cut

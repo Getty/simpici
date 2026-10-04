@@ -60,6 +60,15 @@
     CICD_REGISTRY, CICD_REGISTRY_USER, ...); only CICD_REGISTRY_PASSWORD
     passes through. In dispatcher mode simpicid needs read access to the
     granted secret files.
+  - simpici-worker reports a claim it cannot execute as a failed run with
+    exit code 125 instead of leaving it to its lease: an event it refuses, a
+    claim of the wrong shape, secret files it cannot write, a failure of the
+    run supervisor. The uploaded log ends with "SimpiCI::Worker run N
+    aborted: <reason>", which is also written to standard error; assigned
+    secret values are redacted from it. The event is checked before any
+    secret file is written, and secrets/<run>/ is removed whichever way the
+    run ends. A claim whose run is not a run number is refused before
+    anything is written.
   - Discover repository jobs from their filenames, execute them in selected
     containers and enforce ordered phase barriers with bounded same-phase
     concurrency (default 2).

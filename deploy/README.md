@@ -439,10 +439,30 @@ rebuilding. This is not an exactly-once guarantee for every possible crash
 point: an interruption before the completion is persisted may already have
 left external side effects.
 
+A claim the worker cannot execute is reported instead of being left to its
+lease. That is an event the worker refuses, for example a queue entry written
+by hand or by a dispatcher of another version, a secret file or temporary
+directory it cannot create, and a failure of the run supervisor itself. The
+run becomes `failed` with exit code `125`, and its log ends with the reason,
+which the worker also writes to standard error:
+
+```text
+SimpiCI::Worker run 7 aborted: SimpiCI::Event clone URL must not contain a password; a user name alone is accepted, and SSH authenticates with a key of the account that runs git at /usr/local/share/perl/5.40.1/SimpiCI/Worker.pm line 104.
+```
+
+The reason is the first line of the error. Assigned secret values are redacted
+from it as from the rest of the log; it can name a file of the worker
+installation. The event is checked before any secret file is written, and
+`secrets/<run>/` is removed after every outcome the worker process lives to
+see, also when the completion could not be saved. Only a claim whose run is
+not a run number is refused without a report: there is nothing to report it
+under.
+
 A rejected, expired completion is retained for investigation. Stop the worker
 and archive the file only after checking external effects, before accepting
-new work. Likewise, inspect orphaned secret directories and remove them
-selectively before putting the VM back into service.
+new work. A worker process that is killed during a run still leaves
+`secrets/<run>/` behind: inspect such orphaned secret directories and remove
+them selectively before putting the VM back into service.
 
 The dispatcher reconstructs public metadata; the worker and dispatcher redact
 assigned literal secret values from uploaded logs. This does not detect

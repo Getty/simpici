@@ -44,4 +44,41 @@ is $result->{state}, 'success', 'completion crosses process boundary';
 is $store->root->child('public/runs/1.log')->slurp_utf8, 'transport complete',
   'received log is published';
 
+# The same boundary with both programs, for a claim the worker refuses: a
+# queue entry written by hand, whose clone URL no event may carry any more.
+my $token = $root->child('token');
+$token->spew_utf8("transport-secret-value\n");
+my $refused_url = 'ftp://builder:hunter2-in-url@forge.invalid/legacy.git';
+$config->spew_utf8(JSON::MaybeXS->new(canonical => 1)->encode({
+  root => $store->root->stringify, repositories => [{
+    name => 'legacy', clone_url => $refused_url, secrets => [{
+      name => 'PUBLISH_TOKEN', file => "$token", refs => ['refs/heads/main'], events => ['push']
+    }]
+  }]
+}));
+is $store->allocate_run, 2, 'run 2 is next';
+$store->write_json('queue/2.json', {
+  run => 2, key => 'hand-written', state => 'queued',
+  event => { source => 'git-poll', event => 'push', repository => 'legacy',
+    clone_url => $refused_url, ref => 'refs/heads/main', commit => 'b' x 40, payload => {} }
+});
+my $program = path('bin/simpici-worker')->absolute;
+my $output = qx{"$ENV{TEST_PERL}" -I"$ENV{TEST_LIB}" "$program" --dispatcher test-host --root "@{[ $worker_store->root ]}" --once 2>&1};
+is $? >> 8, 0, 'simpici-worker survives a claim it refuses';
+like $output, qr/SimpiCI::Worker run 2 aborted: SimpiCI::Event clone URL must not contain a password/,
+  'and names the run and the reason on standard error';
+unlike $output, qr/transport-secret-value|hunter2-in-url/, 'without the secret or the URL';
+ok $store->root->child('claims/2.json')->slurp_utf8 =~ /transport-secret-value/,
+  'the claim did carry the secret';
+ok !$worker_store->root->child('secrets')->exists, 'no secret file is written on the worker';
+my $report = JSON::MaybeXS->new->decode($store->root->child('public/runs/2.json')->slurp_utf8);
+is [ $report->@{qw( state exit_code )} ], [ 'failed', 125 ],
+  'the dispatcher records a failed run instead of an expiring lease';
+like $store->root->child('public/runs/2.log')->slurp_utf8,
+  qr/\ASimpiCI::Worker run 2 aborted: SimpiCI::Event clone URL must not contain a password/,
+  'with the reason as its log';
+unlike $store->root->child('public/runs/2.log')->slurp_utf8,
+  qr/transport-secret-value|hunter2-in-url/, 'and no value in it';
+ok !$worker_store->root->child('completion.json')->exists, 'no completion is left to retry';
+
 done_testing;

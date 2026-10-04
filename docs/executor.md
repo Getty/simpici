@@ -63,7 +63,9 @@ The existing registry handoff also uses `CICD_REGISTRY`,
 `CICD_REGISTRY_USER`, `CICD_REGISTRY_PASSWORD` and `CICD_PUBLISH_IMAGE`.
 Credentials belong at a trusted entry point, not in the candidate checkout.
 The distributed worker also materializes dispatcher grants as private secret
-files; see [Operations](../deploy/README.md).
+files, only for an event it accepts and only until the run ends; a claim it
+cannot execute is reported as `failed` with exit code `125`. See
+[Operations](../deploy/README.md).
 
 ## Variables inside jobs
 
