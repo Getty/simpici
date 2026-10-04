@@ -172,6 +172,22 @@ is(SimpiCI::App::Eventd->unread_message(
   'simpicid: repository owner/private.git (https://forge.invalid/owner/private.git) not polled: '
     ."fatal: unable to access 'https://forge.invalid/owner/private.git/': refused\n",
   'an error text that repeats the clone URL loses the credentials as well');
+# The user part the rule refuses is the one the line leaves out, whatever the
+# scheme; a user name the rule accepts stays.
+for my $case (
+  [ 'ssh://user:s3cr3t@forge.invalid/owner/private.git', 'ssh://forge.invalid/owner/private.git' ],
+  [ 'ftps://user:s3cr3t@forge.invalid/owner/private.git', 'ftps://forge.invalid/owner/private.git' ],
+  [ 'user:s3cr3t@forge.invalid:owner/private.git', 'forge.invalid:owner/private.git' ],
+  [ 'ssh://git@forge.invalid/owner/private.git', 'ssh://git@forge.invalid/owner/private.git' ],
+  [ 'git@forge.invalid:owner/private.git', 'git@forge.invalid:owner/private.git' ]
+) {
+  my ( $configured, $shown ) = @$case;
+  is(SimpiCI::App::Eventd->unread_message(repository($configured),
+      "fatal: '".$configured."' is\n not readable\n"),
+    'simpicid: repository owner/private.git ('.$shown.") not polled: fatal: '".$shown
+      ."' is not readable\n",
+    'the line shows '.$shown);
+}
 
 #### The daemon keeps polling
 

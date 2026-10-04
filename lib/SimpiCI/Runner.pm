@@ -65,8 +65,10 @@ sub run {
 
   $workspace->mkpath;
   my $result = $self->_execute($log, 120, 'git', 'init', $workspace->stringify);
+  # The event accepts a clone URL that begins with "-"; its commit, being an
+  # object id, cannot.
   $result = $self->_execute($log, 120, 'git', '-C', $workspace->stringify,
-    'remote', 'add', 'origin', $event->clone_url) if $result->{exit_code} == 0;
+    'remote', 'add', '--', 'origin', $event->clone_url) if $result->{exit_code} == 0;
   $result = $self->_execute($log, 300, 'git', '-C', $workspace->stringify,
     'fetch', '--depth=1', 'origin', $event->commit) if $result->{exit_code} == 0;
   $result = $self->_execute($log, 120, 'git', '-C', $workspace->stringify,

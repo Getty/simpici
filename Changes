@@ -28,13 +28,24 @@
     process group that is ended together with its helpers, and it does not
     answer prompts on the terminal. A remote that prints a lot on standard
     error does not block the poller.
-  - simpicid checks the clone URL of every configured repository when it
-    starts, in local and in dispatcher mode, and exits before it polls if one
-    carries credentials (http:// or https:// with a user part) or whitespace
-    or control characters. The message names the repository and its position
-    in the configuration, never the URL; credentials belong in a Git
+  - simpicid checks every configured repository when it starts, in local and
+    in dispatcher mode, and exits before it polls if one is refused. The
+    repositories setting must be a list of objects, each with a nonempty name
+    and clone_url; an entry of another shape, such as a bare URL, is refused
+    by its position, and a configuration without repositories does not start,
+    in local mode either. A clone URL is refused when it is http:// or
+    https:// with any user part, when it carries a password in the user part
+    in any other form (ssh://user:password@..., ftp(s)://, a URL behind a
+    remote helper, an empty password, a percent-encoded colon,
+    user:password@host:path), or when it contains whitespace or control
+    characters. A user name alone stays valid (ssh://git@host/path,
+    git@host:path). The message names the repository and its position in the
+    configuration and never repeats the value; credentials belong in a Git
     credential helper of the account that runs git. The rule is
-    SimpiCI::Event->clone_url_rejection.
+    SimpiCI::Event->clone_url_rejection; clone_url_without_credentials gives
+    the URL as shown in the "not polled" line. The runner passes the clone
+    URL to git remote add after "--", so a URL that begins with "-" is not
+    read as an option.
   - Dispatch durable leased jobs to outbound SSH workers, with fenced recovery
     and idempotent completion upload through a restricted worker protocol.
   - Scope dispatcher secret files to repositories, refs, events and publish or

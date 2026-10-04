@@ -74,25 +74,49 @@ that is valid today. Important details:
 - `refs` filters the Git polling query, not arbitrary manual inputs.
 - `build_initial: false` skips only the initial baseline. Refs that appear
   later are built; deletion alone does not start a run.
+- `repositories` is a list of objects, each with a `name` and a `clone_url`
+  that are nonempty strings. `simpicid` checks this when it starts, in local
+  and in dispatcher mode, and exits before it polls anything:
+
+  ```text
+  SimpiCI::App::Eventd repositories must be a list
+  SimpiCI::App::Eventd repositories[1] must be an object
+  SimpiCI::App::Eventd repository acme/example (repositories[0]): repository needs name and clone_url
+  ```
+
+  An entry is named by its position and, if it has one, its name. What
+  stands in it is not repeated: a bare URL in the place of an object may
+  carry a token.
 - `clone_url` must not contain credentials. `simpicid` checks every
-  repository when it starts, in local and in dispatcher mode, and exits
-  before it polls anything:
+  repository in the same step:
 
   ```text
   SimpiCI::App::Eventd repository acme/example (repositories[0]): clone URL must not contain credentials; provide them through a Git credential helper of the account that runs git
+  SimpiCI::App::Eventd repository acme/example (repositories[0]): clone URL must not contain a password; a user name alone is accepted, and SSH authenticates with a key of the account that runs git
   ```
 
   The message names the repository and its position in the configuration,
-  never the URL. It is given for an `http://` or `https://` URL with a user
-  part before the host, such as `https://user:token@…`; whitespace and
-  control characters are refused the same way, with their own reason.
-  `git@host:path` and `ssh://git@host/path` stay valid. A clone URL travels
-  with every event into the queue and the job environment, so credentials
-  belong to git instead: set `credential.helper` in the Git configuration of
-  the account `simpicid` runs as, for example the `store` helper with its
-  `~/.git-credentials`, a file only that account may read (`gitcredentials(7)`,
-  `git-credential-store(1)`). In dispatcher mode the worker account fetches
-  the commit and needs its own. `simpici-dispatch` does not repeat this check.
+  never the URL. The first is given for an `http://` or `https://` URL with a
+  user part before the host, such as `https://user:token@…` or
+  `https://token@…`. The second is given for a password in the user part of
+  any other URL, such as `ssh://user:password@…` or `ftp://user:password@…`,
+  an empty password and a `%3A` included, and for `user:password@host:path`
+  without a scheme. Whitespace and control characters are refused the same
+  way, with their own reason. `git@host:path`, `ssh://git@host/path` and
+  `ssh://git@host:2222/path` stay valid; a password that contains a `/` is
+  not recognised. A clone URL travels with every event into the queue and
+  the job environment, so credentials belong to git instead: set
+  `credential.helper` in the Git configuration of the account `simpicid` runs
+  as, for example the `store` helper with its `~/.git-credentials`, a file
+  only that account may read (`gitcredentials(7)`, `git-credential-store(1)`).
+  SSH takes no password from a URL at all; give that account a key. In
+  dispatcher mode the worker account fetches the commit and needs its own.
+  `simpici-dispatch` does not repeat the clone URL check.
+
+  The recorded tips of a repository are kept under its name and clone URL.
+  With a corrected URL it therefore counts as never read: `build_initial`
+  decides whether its current tips are built, and a grant applies only to
+  events that carry the URL the configuration has now.
 - `timeout` limits executor runtime. Git commands have their own limits;
   this is not an equivalent overall limit for the entire run.
 - `simpicid --once` can exit with 0 even if a job has failed. Read the build
@@ -184,8 +208,8 @@ that is valid today. Important details:
   that loses only some of its refs forgets those and treats them as new if
   they come back.
 - Only reading the refs is tolerated. A run that cannot be started, an
-  unwritable state root or queue, a refused clone URL and an unusable grant
-  end the daemon.
+  unwritable state root or queue, an unusable entry of `repositories`, a
+  refused clone URL and an unusable grant end the daemon.
 - Local polling remembers ref tips. Persistent tuple deduplication is only
   available with the queue in dispatcher mode.
 

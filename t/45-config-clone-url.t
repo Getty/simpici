@@ -17,6 +17,7 @@ my $json = JSON::MaybeXS->new(canonical => 1);
 my $user = 'deploy-bot';
 my $token = 's3cr3t-t0ken';
 my $private = 'https://'.$user.':'.$token.'@forge.invalid/owner/private.git';
+my $keyed = 'ssh://'.$user.':'.$token.'@forge.invalid/owner/keyed.git';
 
 sub git_fixture {
   my ( $name ) = @_;
@@ -83,9 +84,11 @@ sub hides_the_url {
 my $good = git_fixture('good');
 my $mapped = git_fixture('private');
 local $ENV{GIT_ALLOW_PROTOCOL}  = 'file';
-local $ENV{GIT_CONFIG_COUNT}    = 1;
+local $ENV{GIT_CONFIG_COUNT}    = 2;
 local $ENV{GIT_CONFIG_KEY_0}    = 'url.'.$mapped.'.insteadOf';
 local $ENV{GIT_CONFIG_VALUE_0}  = $private;
+local $ENV{GIT_CONFIG_KEY_1}    = 'url.'.$mapped.'.insteadOf';
+local $ENV{GIT_CONFIG_VALUE_1}  = $keyed;
 my @repositories = ( repository('owner/good', $good), repository('owner/private', $private) );
 my $refusal = qr/repository owner\/private \(repositories\[1\]\): clone URL must not contain credentials/;
 
@@ -107,6 +110,35 @@ ok !$root->child('local', 'state')->exists, 'and no observation is recorded';
 like $died, qr/\ASimpiCI::App::Eventd $refusal/, 'dispatcher mode refuses the same way';
 hides_the_url($died, 'its message is');
 is [ $warnings, runs_of('dispatcher') ], [ [], [] ], 'and queues nothing';
+
+#### A password in a URL of another scheme
+
+# The same arrangement with ssh://user:password@host: readable through the
+# fixture, so a daemon that lets it pass builds it and writes the URL down.
+sub files_with_the_token {
+  my ( $state ) = @_;
+  my @found;
+  my $directory = $root->child($state);
+  return \@found unless $directory->is_dir;
+  $directory->visit(sub {
+    my ( $file ) = @_;
+    push @found, $file->relative($directory)->stringify
+      if $file->is_file && $file->slurp_raw =~ /\Q$token\E/;
+  }, { recurse => 1 });
+  return [ sort @found ];
+}
+
+my @keyed = ( repository('owner/good', $good), repository('owner/keyed', $keyed) );
+my $keyed_refusal = qr/repository owner\/keyed \(repositories\[1\]\): clone URL must not contain a password/;
+for my $mode (qw( local dispatcher )) {
+  ( $died, $status, $warnings ) = once(daemon_config('keyed-'.$mode, \@keyed, mode => $mode));
+  like $died, qr/\ASimpiCI::App::Eventd $keyed_refusal/,
+    'simpicid does not start with a password in an ssh:// clone URL, mode '.$mode;
+  like $died, qr/SSH authenticates with a key/, 'and says what the account is given instead';
+  hides_the_url($died // '', 'the message is');
+  is [ $warnings, runs_of('keyed-'.$mode) ], [ [], [] ], 'nothing is polled, built or queued';
+  is files_with_the_token('keyed-'.$mode), [], 'and the password is in no file of the state root';
+}
 
 #### The process
 
@@ -141,7 +173,7 @@ is runs_of('process'), [], 'and it has built nothing';
 
 sub configuration_error {
   my ( $clone_url ) = @_;
-  return dies { SimpiCI::App::Eventd->check_clone_urls(
+  return dies { SimpiCI::App::Eventd->check_repositories(
     { repositories => [ repository('owner/project', $clone_url) ] }) };
 }
 
@@ -158,11 +190,27 @@ for my $clone_url (
   'git@forge.invalid:owner/project.git',
   'ssh://git@forge.invalid/owner/project.git',
   'ssh://git@forge.invalid:2222/owner/project.git',
-  'file:///srv/git/project.git',
+  'ssh://forge.invalid:2222/owner/pro:je@ct.git',
+  'ssh://git@forge.invalid/owner/pro:je@ct.git',
+  'ssh://git@[2001:db8::1]:2222/owner/project.git',
+  'ssh://[2001:db8::1]:2222/owner/project.git',
+  'ssh://@forge.invalid/owner/project.git',
+  'git+ssh://git@forge.invalid/owner/project.git',
+  'git://forge.invalid/owner/project.git',
+  'ftp://anonymous@forge.invalid/owner/project.git',
+  'forge.invalid:owner/pro@ject.git',
+  'forge:pro@ject.git',
+  'git@forge.invalid:owner/pro:ject.git',
+  'git@[2001:db8::1]:owner/project.git',
+  '[2001:db8::1]:owner/project.git',
+  'file:///srv/git/us:er@project.git',
+  '/srv/git/us:er@pro:ject.git',
+  './us:er@pro:ject.git',
   '/srv/git/project.git'
 ) {
   is [ scalar SimpiCI::Event->clone_url_rejection($clone_url), configuration_error($clone_url), event_error($clone_url) ],
     [ undef, undef, undef ], 'accepted by the rule, the configuration and the event: '.$clone_url;
+  is(SimpiCI::Event->clone_url_without_credentials($clone_url), $clone_url, 'and shown as it is');
 }
 
 for my $case (
@@ -170,6 +218,24 @@ for my $case (
   [ 'https://'.$token.'@forge.invalid/owner/project.git', qr/credentials/, 'a lone token' ],
   [ 'http://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/credentials/, 'plain HTTP' ],
   [ 'HTTPS://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/credentials/, 'an upper-case scheme' ],
+  [ 'https://@forge.invalid/owner/project.git', qr/credentials/, 'an empty user part over HTTPS' ],
+  [ 'helper::https://'.$token.'@forge.invalid/owner/project.git', qr/credentials/, 'HTTPS behind a remote helper' ],
+  [ $keyed, qr/a password/, 'a password over ssh' ],
+  [ 'ssh://'.$user.':'.$token.'@forge.invalid:2222/owner/project.git', qr/a password/, 'a password ahead of a port' ],
+  [ 'ssh://'.$user.':'.$token.'@[2001:db8::1]:2222/owner/project.git', qr/a password/, 'a password ahead of an IPv6 host' ],
+  [ 'ssh://'.$user.':@forge.invalid/owner/project.git', qr/a password/, 'an empty password' ],
+  [ 'ssh://:'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'a password without a user' ],
+  [ 'ssh://'.$user.':to@ken@forge.invalid/owner/project.git', qr/a password/, 'a password with an @' ],
+  [ 'ssh://'.$user.'%3A'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'a percent-encoded colon' ],
+  [ 'ssh://'.$user.'%3a'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'a lower-case percent-encoded colon' ],
+  [ 'SSH://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'an upper-case ssh scheme' ],
+  [ 'git+ssh://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'a scheme with a plus' ],
+  [ 'git://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'the git scheme' ],
+  [ 'ftp://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'FTP' ],
+  [ 'ftps://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'FTPS' ],
+  [ 'helper::ssh://'.$user.':'.$token.'@forge.invalid/owner/project.git', qr/a password/, 'ssh behind a remote helper' ],
+  [ $user.':'.$token.'@forge.invalid:owner/project.git', qr/a password/, 'user:password@host:path without a scheme' ],
+  [ $user.':@forge.invalid:/srv/git/project.git', qr/a password/, 'that form with an empty password' ],
   [ 'https://forge.invalid/owner/pro ject.git', qr/whitespace or control characters/, 'a space' ],
   [ "https://forge.invalid/owner/project.git\n", qr/whitespace or control characters/, 'a newline' ],
   [ "https://forge.invalid/owner/\tproject.git", qr/whitespace or control characters/, 'a tab' ],
@@ -186,28 +252,24 @@ for my $case (
   like $unbuilt, qr/\ASimpiCI::Event \Q$reason\E at /, 'and so is the event';
   is scalar( grep { index($_, $clone_url) >= 0 || /forge\.invalid/ } $reason, $refused, $unbuilt ), 0,
     'none of them repeats the URL';
+  my $shown = SimpiCI::Event->clone_url_without_credentials($clone_url);
+  is scalar( grep { index($shown, $_) >= 0 } $user, $token, 'ken@', '@' ), 0,
+    'and it is shown without its user part' unless $label =~ /\Aa (?:space|newline|tab|DEL|NUL)\z/;
 }
+is(SimpiCI::Event->clone_url_without_credentials($keyed), 'ssh://forge.invalid/owner/keyed.git',
+  'what is shown is the rest of the URL');
+is(SimpiCI::Event->clone_url_without_credentials($user.':'.$token.'@forge.invalid:owner/project.git'),
+  'forge.invalid:owner/project.git', 'also without a scheme');
 
-#### What the check leaves alone
+#### The example configurations
 
+# The shapes the check refuses are in t/46-config-repositories.t.
 for my $example (qw(
   etc/simpici.example.json etc/simpici.dispatcher.example.json
   deploy/dispatcher/dispatcher.example.json
 )) {
-  ok lives { SimpiCI::App::Eventd->check_clone_urls($json->decode(path($example)->slurp_utf8)) },
+  ok lives { SimpiCI::App::Eventd->check_repositories($json->decode(path($example)->slurp_utf8)) },
     'the example configuration passes: '.$example;
-}
-
-like dies { SimpiCI::App::Eventd->check_clone_urls({ repositories => [
-    { clone_url => '/srv/git/project.git' }, { clone_url => $private } ] }) },
-  qr/ repository \? \(repositories\[1\]\): /, 'a repository without a name is given by its position';
-for my $config (
-  +{}, +{ repositories => {} },
-  +{ repositories => [ 'owner/project', { name => 'owner/project' },
-    { name => 'owner/project', clone_url => [ $private ] } ] }
-) {
-  ok lives { SimpiCI::App::Eventd->check_clone_urls($config) },
-    'no other shape is judged: '.$json->encode($config);
 }
 
 done_testing;
