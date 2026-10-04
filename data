@@ -1,0 +1,32 @@
+---
+claimed_at: 2026-10-04T01:38:08Z
+claimed_by: simpici
+class: standard
+completed: 2026-10-04T01:38:04Z
+created: 2026-10-04T01:08:05Z
+id: 11
+priority: high
+started: 2026-10-04T01:38:04Z
+status: done
+tags:
+- dispatcher
+- secrets
+title: Secret-Grants beim Dispatcher-Start validieren statt erst beim Claim
+updated: 2026-10-04T01:38:08Z
+---
+
+Befund aus k8 (Worker, 2026-10-04): Ein ungültiges Grant-Muster, ein ungültiger Secret-Name oder eine fehlende Secret-Datei fällt erst in Dispatcher::_secrets auf, also NACH queue->claim. Der Lease läuft ab, und ein Tippfehler in der Konfiguration legt alle Läufe des Repos still, ohne dass es beim Start auffällt. Ziel: simpicid (Dispatcher-Modus) und simpici-dispatch prüfen alle Grants beim Laden der Konfiguration (Muster, Name, Phasen, lesbare Datei mit einer nichtleeren Zeile) und brechen mit klarer Meldung ab. Test: kaputte Konfiguration -> Start schlägt fehl, keine Claims.
+
+Erweitert (Hub, nach k9): (a) Die Secret-Namens-Sperrliste um alle Variablen ergänzen, die der Executor selbst setzt — mindestens CICD_BRANCH, CICD_TAG, CICD_IMAGE_REPOSITORY; am besten die Liste aus einer Stelle ableiten, damit sie nicht wieder hinterherhinkt. (b) .claude/skills/simpici-core/SKILL.md Zeile ~36 ('no automatic cross-job artifact transfer') auf CICD_INPUTS aktualisieren (projekteigener Skill, getrackt, kein Hardlink).
+
+2026-10-04 01:32 Worker: Test zuerst (t/62-grant-validation.t). Rot aus dem richtigen Grund gesehen: alter Code claimt bei kaputtem Grant (state=running, worker/token/expires gesetzt), Fehler erst danach; validate() fehlt. Entwurf: eine Regelstelle SimpiCI::Dispatcher::_grants (prueft ALLE Grants, liest Werte), validate() fuer simpicid-Start, request(claim) ruft _grants VOR queue->claim und filtert danach nur noch. finish validiert bewusst nicht (braucht nur Queue + claims-Snapshot; ein abgelehntes finish kostet nach Lease-Ablauf das Ergebnis).
+
+2026-10-04 01:36 Entscheidungen (Worker): (1) Sperrliste = jede CICD_-Variable, der bin/simpici-executor in einem Container einen Wert zuweist (-e NAME=...): 23 Namen inkl. BRANCH, TAG, IMAGE_REPOSITORY, PROVIDER_OUT sowie REGISTRY, REGISTRY_USER, PUBLISH_IMAGE. CICD_REGISTRY_PASSWORD bleibt erlaubt (Executor reicht nur durch: -e NAME ohne Wert). Begruendung REGISTRY/REGISTRY_USER/PUBLISH_IMAGE: docker CLI haengt -e hinter --env-file ('to allow override', docker/cli opts/parse.go), der Wert des Worker-Hosts gewinnt also immer; ein solches Secret war bisher stiller No-op. Nur an Quelltext gelesen, nicht mit Docker ausgefuehrt. (2) Eine Stelle: SimpiCI::Dispatcher->reserved_secret_names; Waechtertest in t/62 liest die -e-Zuweisungen aus dem Executor und verlangt Gleichheit in beide Richtungen, ohne Ausnahmeliste. (3) finish validiert nicht. (4) Claim prueft ALLE Grants aller Repos vor queue->claim und reicht die dabei gelesenen Werte aus (Datei wird pro Claim einmal gelesen, Rotation ohne Neustart). Folge: ein kaputter Grant stoppt die Claims aller Repos, Laeufe bleiben queued. (5) simpicid prueft nur im Dispatcher-Modus, vor dem ersten Poll; neue Betriebsvoraussetzung (Poller muss Secret-Dateien lesen) steht in deploy/README.md. (6) Meldungsformat: 'SimpiCI::Dispatcher repository NAME (repositories[i]), secret NAME (secrets[j]): Grund'; alte Muster (invalid ref pattern, invalid secret name, ...) passen weiter, bestehende Tests unveraendert.
+
+2026-10-04 01:36 Offen / Also found (nicht umgesetzt, Entscheidung beim Hub): (a) Grants, die nie greifen, werden weiter NICHT abgelehnt: fehlende/leere refs oder events, exakter Ref ohne refs/-Praefix, unbekannte Event-Namen, events nur pull_request, phases []. (b) Neu abgelehnt, weil es vorher mit Perl-interner Meldung oder nie funktionierte: Listenfelder, die keine Liste von Strings sind; Grant ohne file; Repo mit secrets, aber ohne name/clone_url. (c) Waehrend die Konfiguration kaputt ist, markiert kein Claim abgelaufene Leases als interrupted (steht jetzt in deploy/README.md). (d) Fehlermeldungen von simpici-dispatch laufen ueber SSH-stderr zum Worker: jeder Worker sieht Repo-Namen und Secret-Dateipfade fremder Repos, nie Werte (Pfad im Fehler gab es vorher schon). (e) Es gibt keinen Weg, die Konfiguration zu pruefen, ohne zu pollen (simpicid --check o.ae.); auf dem Dispatcher-Host selbst loggt simpici-dispatch nichts. (f) Sollen Registry-Host/-User per Grant kommen koennen, muesste der Executor sie wie CICD_REGISTRY_PASSWORD nur durchreichen. (g) .claude/skills/simpici-core/SKILL.md: Edit hat die Inode ersetzt (Linkzahl vorher und nachher 1).
+
+2026-10-04 01:36 Done: Grants werden als Ganzes geprueft (SimpiCI::Dispatcher::_grants/validate) - beim simpicid-Start im Dispatcher-Modus vor dem ersten Poll und in request(claim) vor queue->claim; finish bleibt ohne Pruefung. Sperrliste = alle vom Executor zugewiesenen CICD_-Variablen (reserved_secret_names, Waechtertest gegen bin/simpici-executor). Doku: deploy/README.md, docs/executor.md, POD, simpici-core SKILL.md (CICD_INPUTS). Verifiziert: t/62-grant-validation.t neu (81 Tests; rot gegen alten Code: Lauf wurde running/Lease geschrieben), prove -lr t/ = 14 Dateien, 186 Tests, PASS. Nicht verifiziert: echter Docker-/SSH-Lauf, dzil test. Baum commit-fertig, nicht committet.
+
+2026-10-04 01:37 Gegenprobe zur Sperrliste (docker-CLI 29.8 gegen rootless Podman, alpine): bei 'docker run --env-file F -e NAME=wert' gewinnt -e, auch mit leerem Wert ('-e NAME=' ergibt leer); bei '-e NAME' ohne Wert und ungesetzter Host-Variable gewinnt die env-file, bei gesetzter Host-Variable der Host-Wert. Damit bestaetigt: ein Secret CICD_REGISTRY / CICD_REGISTRY_USER / CICD_PUBLISH_IMAGE war bisher wirkungslos, die Sperre ist richtig; CICD_REGISTRY_PASSWORD bleibt als Grant wirksam, solange der Worker-Host die Variable nicht selbst setzt.
+
+2026-10-04 01:38 Committed as 1a76ce9
