@@ -1,0 +1,30 @@
+---
+class: standard
+created: 2026-10-05T00:16:51Z
+id: 28
+priority: low
+status: backlog
+tags:
+- dispatcher
+- poller
+- secrets
+title: Restpunkte aus dem k13-Review und offene Nebenbefunde aus k13, k21-k27
+updated: 2026-10-05T02:33:02Z
+---
+
+Sammelkarte, nicht dringend, blockiert den Paketbau nicht. Stand Code: 07bd69a.
+
+Aus dem unabhaengigen Review von k13 (2026-10-05, nur lesend; CONFIRMED = per Probe belegt):
+(1) C1-Steuerzeichen (U+0080-U+009F, z. B. \x9b) passieren jede Log-Bereinigung: GitPoll.pm:289, App/Eventd.pm:263, Dispatcher.pm:379, Event.pm:77 ersetzen nur \x00-\x1f\x7f. Vom Remote steuerbar ueber stderr von ls-remote in der not-polled-Zeile; ueber einen Repository-Namen auch in dispatch.log und der Ausgabe von --check. CONFIRMED (Durchlass), Wirkung im Terminal nur plausibel.
+(2) t/92-dispatch-failures.t:262-279 bemerkt nicht, wenn Warnungen nicht mehr geloggt werden: mit leerem __WARN__-Handler in bin/simpici-dispatch bleiben alle 113 Tests gruen. CONFIRMED.
+(3) Config.pm:48 positive_integer hat keine Obergrenze. timeout als 20-stellige Zahl besteht die Pruefung, danach endet jede Anfrage an simpici-dispatch mit internal error, auch finish (lease_seconds besteht Int nicht, bin/simpici-dispatch:82). request_read_timeout 4294967296 wird zu alarm(0), also ohne Lesefrist. CONFIRMED.
+(4) Mit installiertem Unicode::UTF8 wirft slurp_utf8 bei ungueltigem UTF-8 nicht, sondern warnt und ersetzt (Dispatcher.pm:143-148, Config.pm:79-84): eine Latin-1-Secret-Datei besteht die Grant-Pruefung, der Wert ginge mit U+FFFD an den Worker, und dispatch.log nennt das fehlerhafte Byte des Secrets. Fuer die Secret-Datei CONFIRMED; die Annahme gab es schon vorher, die Logzeile ist neu. Keine Tests fuer die beiden Meldungen.
+(5) Dispatcher.pm:64 lehnt ein Muster ab, das greifen kann: refs/heads/a./* gilt als invalid ref pattern, obwohl Event->ref_rejection den Ref refs/heads/a./b annimmt und die alte Regex das Muster zuliess. CONFIRMED.
+(6) Dispatcher.pm:126-129 nimmt weiter einen Grant an, der nie greift: events mit einem Steuerzeichen im Namen, das Event->name_rejection bei jedem Event ablehnt. CONFIRMED.
+(7) App/Eventd.pm:203-206 und Config.pm:70: build_initial als String ("true", "yes") und runner als leerer String beenden den Start jetzt mit Exit 3; lief vorher. Dokumentiert, aber Verhaltensaenderung beim Upgrade. Nur gelesen.
+Dazu: t/43 prueft auf verstrichene Zeit (kleiner 5, kleiner 8, zwischen 2 und 9 s) und ist unter Last anfaellig.
+Nicht durchgesehen: Prosa in README.md, deploy/README.md, docs/executor.md und POD gegen den Code.
+
+Nicht umgesetzte Nebenbefunde der Worker stehen als Also-found-Notizen auf k13 (a-j), k21 (B-E), k22, k23 (F1-F4), k24 (a-d), k25, k26, k27 (a-g); die Meldungen dazu kamen beim Hub nie an. Echter Fehler darunter, k13 j: SimpiCI::Event->deduplication_key stirbt mit Wide character, sobald Repository-Name oder Ref ein Zeichen oberhalb von U+00FF enthaelt; simpicid endet dann im Dispatcher-Modus beim ersten Event dieses Repositorys. Die Abhilfe aendert Schluessel bestehender Queue-Eintraege und braucht eine Entscheidung.
+
+2026-10-05 02:33 Aus dem Durchlauf auf machop (Debian 13, System-Perl 5.40.1, rootful Docker 26.1, Compose 2.26), Hub 2026-10-05: (8) deploy/README Abschnitt 5 sagt, die Befehle fuer rootful Docker seien ungetestet: sie laufen so wie geschrieben, der Satz kann weg. UID 990 gehoert auf einem Debian-13-Host systemd-resolve, die State-Dateien erscheinen dort unter diesem Namen. (9) Ohne das Paket perl-doc gibt simpici --man 'You need to install the perl-doc package' und danach den Quelltext aus; t/50-cli.t Test 4 (simpici manual describes the shared executor) scheitert dort, der gleiche Test fuer simpicid besteht nur, weil der Quelltext den Satz enthaelt. Fuer das .deb: perl-doc als Recommends oder --man ohne perldoc. (10) prove -lr t/ in der VM: 49 Dateien, 2584 Tests, 2 Fehlschlaege: t/50 Test 4 (siehe 9) und einmalig t/51 Test 13 (one line on standard error that names the grant and the reason), in vier weiteren Einzellaeufen nicht wieder aufgetreten, Ursache offen. (11) Der Poller schreibt keine Zeile, wenn er einen Lauf einreiht: docker compose logs poller blieb bei drei eingereihten Laeufen leer; wer wissen will, ob ein Push gesehen wurde, muss in state/queue nachsehen. (12) Doppelte Schluessel in der Konfiguration (zweimal timeout) werden ohne Hinweis angenommen, der letzte gilt.
