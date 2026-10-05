@@ -382,12 +382,23 @@ Replace the name and clone URL with your repository. Its `.cicd` files must
 already be committed. This example uses only settings supported today.
 
 ```sh
+# Check the configuration: reads no remote and writes nothing.
+perl -Ilib bin/simpicid --config simpici.json --check
+
 # Poll once, including a build of the existing branch tip.
 perl -Ilib bin/simpicid --config simpici.json --once
 
 # Keep polling.
 perl -Ilib bin/simpicid --config simpici.json
 ```
+
+- `--check` makes the check the daemon makes when it starts and nothing
+  else. It exits with 0 if the daemon would start with the file and with 1
+  if not, and then prints everything that is wrong, one line each on
+  standard error and without a value of the configuration. A key that
+  nothing reads, such as a misspelt setting, gets a line that begins with
+  `simpicid: warning:` and is no error. Run it before every restart, see the
+  [operations guide](deploy/README.md#check-the-configuration-before-you-start-or-restart).
 
 - `build_initial: false` records the existing state on the first poll without
   building it.
@@ -404,10 +415,15 @@ perl -Ilib bin/simpicid --config simpici.json
   [operations guide](deploy/README.md#accepted-clone-urls).
 - Every entry of `repositories` is an object with a `name` and a
   `clone_url`, the name without control characters such as a tab or a line
-  end; `simpicid` exits at start otherwise.
+  end, and with `refs`, a list of ref names or patterns; `build_initial` is
+  `true` or `false`. `simpicid` exits at start otherwise.
 - `timeout` limits the native executor's runtime.
 - `ls_remote_timeout` is a separate, optional limit for reading the refs of
   one repository; it defaults to 60 seconds.
+- `interval`, `timeout` and `ls_remote_timeout` are positive integers of
+  seconds. Anything else, a `mode` other than `local` or `dispatcher` and a
+  configuration that is no JSON object keep `simpicid` from starting, with a
+  message that names the setting and not its value.
 - Polling remembers the last observed tip of each ref. In local mode, a change
   from `A → B → A` can build the same commit again; the dispatcher queue
   provides durable repository/ref/commit deduplication. A ref that disappears
@@ -422,9 +438,13 @@ perl -Ilib bin/simpicid --config simpici.json
   repository, a local build included, and builds nothing the first has built.
 - `--once` ends a polling cycle. Its exit code does not replace the build
   status in the run report.
-- A repository whose refs cannot be read, or are not read within
-  `ls_remote_timeout`, is logged and skipped until the next cycle; the other
-  repositories are still polled. `--once` then exits with 1.
+- A repository whose refs cannot be read, are not read within
+  `ls_remote_timeout` or are more than 16 MiB of them is logged and skipped
+  until the next cycle; the other repositories are still polled. `--once`
+  then exits with 1. The line is one line of bounded length, with control
+  characters of the remote's answer shown as `?`.
+- `TERM`, `INT` and `HUP` end a query that waits for a remote, with the
+  helpers git started for it, before they end the daemon.
   The same holds for a repository that returns no refs while configured refs
   of its last poll are missed. That line is a signal only: the recorded tips
   stay with or without it. A repository that has no refs at all at its first
@@ -505,6 +525,20 @@ seconds to send its request; the optional top-level setting
 `request_read_timeout` of the dispatcher configuration changes that. Only
 the reading is limited: a request that was read is served to its end,
 however long the queue or the redaction of a large log take.
+
+A request the dispatcher cannot serve tells the worker one line and no
+more, `simpici-dispatch: <reason>` with one of `configuration unusable`,
+`request not read in time`, `request too large`, `invalid request` and
+`internal error`: the configuration names the repositories and secret files
+of every project. What went wrong is written to `<root>/dispatch.log` on the
+dispatcher, see
+[when a request of a worker fails](deploy/README.md#when-a-request-of-a-worker-fails).
+
+A secret grant that cannot be used keeps `simpicid` from starting in
+dispatcher mode and fails every claim, and so does one that could never
+apply to a run, such as a grant without `refs` or `events`. The message
+names the repository and the secret, never the path of the secret file or
+another value of the grant. `simpicid --check` lists every such grant.
 
 The worker saves the completion of a run before it sends it, and sends it
 again until the dispatcher answers. A dispatcher it cannot reach, or one that

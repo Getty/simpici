@@ -1,4 +1,5 @@
 package SimpiCI::Event;
+our $VERSION = '0.001';
 
 use Moo;
 
@@ -10,9 +11,12 @@ use JSON::MaybeXS;
 use Types::Standard qw( Enum Str );
 use namespace::autoclean;
 
+# Where an event can come from, and the one place that says so.
+sub sources { qw( git-poll webhook manual ) }
+
 has source => (
   is       => 'ro',
-  isa      => Enum[qw( git-poll webhook manual )],
+  isa      => Enum[ __PACKAGE__->sources ],
   required => 1,
 );
 
@@ -40,17 +44,25 @@ sub BUILD {
 
   croak __PACKAGE__.' commit must be a full hexadecimal object id'
     unless $self->commit =~ /\A[0-9a-f]{40}(?:[0-9a-f]{24})?\z/;
-  croak __PACKAGE__.' ref must start with refs/'
-    unless $self->ref =~ /\Arefs\//;
-  croak __PACKAGE__.' ref is not canonical'
-    if $self->ref =~ /[\x00-\x20\x7f~^:?*\[\\]/
-      || $self->ref =~ /\.\.|@\{|\/\/|\/\.|\.lock(?:\/|$)|[.\/]$/;
-  my $rejection = $self->clone_url_rejection($self->clone_url);
+  my $rejection = $self->ref_rejection($self->ref)
+    // $self->clone_url_rejection($self->clone_url);
   croak __PACKAGE__.' '.$rejection if defined $rejection;
   for my $field (qw( repository event )) {
     my $reason = $self->name_rejection($self->$field) // next;
     croak __PACKAGE__.' '.$field.' '.$reason;
   }
+}
+
+# The rule for the ref of an event: a full name below refs/, as git writes
+# one. Asked by the dispatcher as well, for the exact refs of a grant.
+sub ref_rejection {
+  my ( $self, $ref ) = @_;
+
+  return 'ref must start with refs/' unless $ref =~ /\Arefs\//;
+  return 'ref is not canonical'
+    if $ref =~ /[\x00-\x20\x7f~^:?*\[\\]/
+      || $ref =~ /\.\.|@\{|\/\/|\/\.|\.lock(?:\/|$)|[.\/]$/;
+  return;
 }
 
 # The rule for the two fields that are free text, the name of the repository
@@ -341,6 +353,29 @@ end it. The constructor croaks with the field ahead of the reason,
 
 and C<simpicid> applies the rule to the name of every configured repository
 before it polls, see L<SimpiCI::App::Eventd/check_repositories>.
+
+=head2 ref_rejection
+
+  my $reason = SimpiCI::Event->ref_rejection($ref);
+
+Returns why a string is not accepted as the C<ref> of an event, or nothing
+if it is. It never contains the string:
+
+  ref must start with refs/
+  ref is not canonical
+
+A ref is a full name below C<refs/> without what git allows in no ref name:
+a space or a control character, C<~ ^ : ? * [> or a backslash, C<..>, C<@{>,
+C<//>, a component that begins with a dot or ends in C<.lock>, and a dot or
+a slash at its end. The constructor croaks with these words, and
+L<SimpiCI::Dispatcher> holds the exact refs of a secret grant against the
+same rule: a grant for a ref no event can carry would apply to no run.
+
+=head2 sources
+
+Returns the sources an event can have, C<git-poll>, C<webhook> and
+C<manual>. The constructor accepts no other, and a secret grant can name no
+other in its C<sources>.
 
 =head2 deduplication_key
 

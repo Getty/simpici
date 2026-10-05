@@ -1,4 +1,5 @@
 package SimpiCI;
+our $VERSION = '0.001';
 
 use strict;
 use warnings;
@@ -15,6 +16,7 @@ SimpiCI - small Git-aware continuous integration runner
 
 SimpiCI normalizes repository events, checks out exact revisions, and executes
 repository-owned jobs in filename-selected containers. See L<SimpiCI::Event>,
-L<SimpiCI::Store>, L<SimpiCI::Runner>, and L<SimpiCI::Source::GitPoll>.
+L<SimpiCI::Store>, L<SimpiCI::Runner>, L<SimpiCI::Source::GitPoll> and, for
+the configuration file of the daemon, L<SimpiCI::Config>.
 
 =cut

@@ -385,6 +385,12 @@ the complete plan.
   That text, with the file it is about and where it was raised, is written
   to standard error of the worker and nowhere else. See
   [Operations](../deploy/README.md#recovery-and-limits).
+- What a worker hears of a request the dispatcher could not serve is as
+  fixed: one line, `simpici-dispatch: <reason>`, with one of
+  `configuration unusable`, `request not read in time`, `request too large`,
+  `invalid request` and `internal error`. Which repository, which grant or
+  which file it was stays on the dispatcher, in `<root>/dispatch.log`. See
+  [Operations](../deploy/README.md#when-a-request-of-a-worker-fails).
 - Worker and dispatcher redact assigned secret values with one function:
   every literal occurrence of every value of the claim, so that nothing is
   left where one value begins another or two of them overlap. This does not

@@ -1,4 +1,5 @@
 package SimpiCI::Store;
+our $VERSION = '0.001';
 
 use Moo;
 

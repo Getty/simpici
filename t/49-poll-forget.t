@@ -350,6 +350,23 @@ for my $mode (qw( local dispatcher )) {
   my $outcome = program('--config', $root->child('missing.json')->stringify, '--state');
   is $outcome->[0], 3, 'a configuration that cannot be read ends with the exit status 3';
   like $outcome->[2], qr/\Asimpici: .*missing\.json/, 'and a message that names it';
+  # Read as the daemon reads it: a file that is no configuration is refused
+  # in the words of SimpiCI::Config, without what it holds.
+  for my $case ( [ '["https://user:t0ken@example.invalid/x.git"]', 'configuration must be an object' ],
+      [ '{ "root": "t0ken", ', 'configuration is no JSON: the decoder stopped at character \d+' ] ) {
+    my ( $text, $reason ) = @$case;
+    my $file = $root->child('unusable.json');
+    $file->spew_utf8($text);
+    $outcome = program('--config', "$file", '--state');
+    is $outcome->[0], 3, 'a file that is no configuration ends with the exit status 3';
+    like $outcome->[2], qr/\Asimpici: SimpiCI::App::Run \Q$file\E: $reason at /, 'with the reason';
+    unlike $outcome->[2], qr/t0ken|example\.invalid/, 'and nothing of its text';
+  }
+  my $refless = configure('refless', [ { name => 'owner/refless', clone_url => '/srv/x.git' } ]);
+  $outcome = program('--config', "$refless", '--state');
+  is $outcome->[0], 3, 'a repository without refs is refused here as by the daemon';
+  like $outcome->[2], qr/\Asimpici: SimpiCI::App::Eventd repository owner\/refless \(repositories\[0\]\): refs must be a list of ref names or patterns/,
+    'in its words';
   my $refused = configure('refused', [ { name => 'owner/refused',
     clone_url => 'https://user:token@example.invalid/owner/refused.git' } ]);
   $outcome = program('--config', "$refused", '--repository', 'owner/refused', '--forget', 'refs/heads/main');

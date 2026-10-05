@@ -51,7 +51,7 @@ the initial fetch is shallow.
 | Program | Key options |
 | --- | --- |
 | `simpici` | `--event FILE`, optional `--root DIR`, `--timeout SECONDS`, `--runner FILE`, `--help`, `--man`; for the recorded tips of the poller `--config FILE` with `--state`, optional `--repository NAME`, or with `--repository NAME --forget REF` |
-| `simpicid` | `--config FILE`, optional `--once`, `--runner FILE`, `--help`, `--man` |
+| `simpicid` | `--config FILE`, optional `--once`, `--check`, `--runner FILE`, `--help`, `--man` |
 | `simpici-worker` | `--dispatcher USER@HOST`, `--root DIR`, optional `--once`, `--executor FILE` |
 | `simpici-dispatch` | `--config FILE`, `--worker NAME`; internal stdin JSON protocol |
 
@@ -76,6 +76,23 @@ that is valid today. Important details:
 - `root` contains private state and the separate public projection.
 - `interval` is the pause after the entire polling cycle. Local builds run
   serially; multiple repositories are not built concurrently.
+- `interval`, `timeout`, `ls_remote_timeout` and `request_read_timeout` are
+  positive integers of seconds, `mode` is `local` or `dispatcher`, `root` and
+  `runner` are nonempty strings. `simpicid` checks them when it starts, in
+  either mode, and exits before it polls anything:
+
+  ```text
+  SimpiCI::App::Eventd timeout must be a positive integer
+  SimpiCI::App::Eventd mode must be "local" or "dispatcher"
+  SimpiCI::App::Eventd root is required in dispatcher mode
+  ```
+
+  A message names the setting and never its value. A setting that is left
+  out has its default: `local`, `./var`, 60, 3600, 60 and 30 seconds and the
+  installed `simpici-executor`. In dispatcher mode `root` has none, because
+  `simpici-dispatch` reads the same file and has to find the same directory.
+  [Check the configuration](#check-the-configuration-before-you-start-or-restart)
+  shows how to see all of this without starting the daemon.
 - `refs` filters the Git polling query, not arbitrary manual inputs.
 - `build_initial: false` skips only the initial baseline. Refs that first
   appear later are built; deletion alone does not start a run, and neither
@@ -99,6 +116,17 @@ that is valid today. Important details:
   The same rule holds for the `repository` and the `event` of every event,
   an event file given to `simpici --event` included: it is the rule of
   `SimpiCI::Event`, as the one for the clone URL is.
+- `refs` is a list of ref names or patterns, and has to be there. An empty
+  list polls every ref the repository has. `build_initial` is `true` or
+  `false`, and `false` without it:
+
+  ```text
+  SimpiCI::App::Eventd repository acme/example (repositories[0]): refs must be a list of ref names or patterns
+  SimpiCI::App::Eventd repository acme/example (repositories[0]): build_initial must be true or false
+  ```
+
+  A repository without `refs`, or with one name in the place of the list,
+  could not be polled in any cycle; the daemon says so once, at its start.
 - `clone_url` is one of the [accepted clone URLs](#accepted-clone-urls).
   `simpicid` checks every repository in the same step and exits with the
   reason:
@@ -150,9 +178,31 @@ that is valid today. Important details:
   cycle can take that long for every repository that hangs, before `interval`
   starts. The second query of a repository without a baseline, described
   below, gets what the first left of the limit, not a limit of its own. It is
-  not `timeout`, which limits a run. A value that is not a
-  positive integer ends the daemon at its first cycle instead of polling
-  without a limit.
+  not `timeout`, which limits a run. A value that is not a positive integer
+  ends the daemon at its start instead of polling without a limit.
+- What a repository may answer is limited as well: 16 MiB of refs and 1 MiB
+  of other output. A query that prints more is ended at once, like one that
+  ran out of time, and its repository counts as unreadable for this cycle:
+
+  ```text
+  simpicid: repository acme/example (https://forge.example/acme/example.git) not polled: SimpiCI::Source::GitPoll git ls-remote printed more than 16777216 bytes on standard output
+  ```
+
+  16 MiB are some hundred thousand refs. Nothing of an answer that was cut
+  off is compared or recorded, so the recorded tips stay and nothing is
+  built from half a list. The limits are fixed.
+- A `not polled` line is one line, whatever the remote sent. Of the text git
+  printed it carries at most 1000 characters, the beginning and the end with
+  `[...]` in between, because git says last what it gave up for. Every
+  control character in it, an escape sequence of a forge's banner for
+  instance, is shown as `?`.
+- `TERM`, `INT` and `HUP` end a query that is waiting for a remote before
+  they end the daemon: git and the helpers it started are ended as one
+  process group, with `TERM` and at most a second later `KILL`, and the
+  daemon then ends by the signal. Without this the query would be left
+  behind by a daemon that is stopped by hand, where no service manager
+  cleans up after it. A daemon that is killed still leaves it, until the
+  remote gives up.
 - The query cannot ask for anything: its standard input is `/dev/null`, and a
   helper that prompts on the terminal `simpicid` was started from is stopped
   and runs into the limit. Credentials have to be available without a prompt.
@@ -241,9 +291,10 @@ that is valid today. Important details:
   has built: it waits while the first polls that repository, in local mode
   until its build has ended, and then compares with what the first recorded.
   This makes a second poller harmless, not useful; run one per `root`.
-- Only reading the refs is tolerated. A run that cannot be started, an
-  unwritable state root or queue, an unusable entry of `repositories`, a
-  refused clone URL and an unusable grant end the daemon.
+- Only reading the refs is tolerated. A run that cannot be started and an
+  unwritable state root or queue end the daemon while it runs. A setting, an
+  entry of `repositories`, a clone URL or a grant that cannot be used keeps
+  it from starting.
 - Local polling remembers ref tips. Persistent tuple deduplication is only
   available with the queue in dispatcher mode.
 
@@ -258,6 +309,121 @@ CICD_IMAGE_REPOSITORY=simpici-local CICD_PUBLISH_IMAGE=false \
 The publish variable is a convention used by these scripts, not authorization.
 In production services, credentials and network access must be restricted
 independently of such guards.
+
+### Check the configuration before you start or restart
+
+```sh
+simpicid --check --config /etc/simpici/dispatcher.json
+```
+
+`--check` makes the check the daemon makes when it starts, and nothing else.
+It reads the configuration and, in dispatcher mode, the secret files. It
+reads no remote, starts no git, writes no state, ends no lease and queues
+nothing; it does not even create the state root. It is safe beside a running
+daemon.
+
+- Exit status `0`: the daemon starts with this file. Nothing is printed
+  but the warnings described below, if there are any.
+- Exit status `1`: it does not. Standard error has one line for everything
+  that is wrong, not only for the first thing, each without a value of the
+  configuration:
+
+  ```text
+  simpicid: SimpiCI::App::Eventd interval must be a positive integer
+  simpicid: SimpiCI::App::Eventd repository acme/example (repositories[0]): refs must be a list of ref names or patterns
+  simpicid: SimpiCI::App::Eventd repositories[1] must be an object
+  simpicid: SimpiCI::Dispatcher repository acme/example (repositories[0]), secret CICD_REGISTRY_PASSWORD (secrets[0]): cannot read secret file: Permission denied
+  ```
+
+  The settings come first, then the repositories in their order, then the
+  grants. A file that is missing, no JSON or no JSON object is one such
+  line.
+- Exit status `64`: the call itself is wrong, `--config` is missing.
+- Without `--check`, a daemon that cannot start with the file ends with the
+  first of these lines and the exit status `3`. It has that status too when
+  it cannot go on later, over a state or a queue it cannot read or write;
+  `1` is left to `--once` for a repository that was not polled.
+- A line that begins with `simpicid: warning:` is no error and leaves the
+  exit status alone. It names a key that nothing reads, at the top of the
+  file, in a repository or in a grant:
+
+  ```text
+  simpicid: warning: SimpiCI::App::Eventd unknown key intervall
+  ```
+
+  Mostly that is a setting that was misspelt and is therefore not in
+  effect. The daemon starts with such a file and does not mention the key;
+  look at the warnings once after you edit the file.
+
+**Run it as the account of the daemon.** Whether a secret file can be read
+is a question of the account, and a check as `root` passes where the daemon
+fails:
+
+```sh
+sudo -u simpici simpicid --check --config /etc/simpici/dispatcher.json \
+  && sudo systemctl restart simpicid
+```
+
+Do it in this order. `systemctl restart` stops the running daemon before it
+starts the new one, so a file that turns out to be unusable leaves you
+without a poller; the check tells you before anything is stopped. The
+supplied [unit](simpicid.service) also runs the check as `ExecStartPre`,
+with the account and the restrictions of the service. That does not save a
+restart with a broken file, which has stopped the old daemon by then, but it
+puts every finding into the journal instead of the first one, where
+`journalctl -u simpicid` shows them.
+
+The same check covers what `simpici-dispatch` needs of the file, so a
+configuration that passes is also one the claims of the workers are served
+from. `simpici-dispatch` reads the file again for every request: an edit
+that breaks it takes effect at once for the workers, whether or not
+`simpicid` was restarted, see
+[when a request of a worker fails](#when-a-request-of-a-worker-fails).
+
+What the check cannot know: whether a remote exists and answers, whether
+the state root is writable, whether `runner` is an executable file, and
+whether an event name in a grant is one that ever occurs.
+
+**After an upgrade, run the check before the first restart.** A daemon of
+this version does not start with what earlier versions started with and
+then never used, or failed on in every cycle:
+
+- a repository without `refs`, or with a string in their place, which was
+  reported as `not polled` in every cycle;
+- `interval`, `timeout`, `ls_remote_timeout` or `request_read_timeout` that
+  is not a positive integer, a `mode` that is neither `local` nor
+  `dispatcher`, and a dispatcher configuration without `root`;
+- a `build_initial` that is neither `true` nor `false`, which counted as
+  `true` when it was a word;
+- a grant without `refs` or `events`, for `pull_request` alone, or with an
+  empty `sources` or `phases`. None of these ever gave a secret to a run.
+- a grant whose `sources` name anything but `git-poll`, `webhook` and
+  `manual`, or whose `refs` hold an exact ref that is no full ref name.
+  Beside an entry that can match, such a grant did apply for that one; it
+  is refused all the same, for the entry that means nothing.
+
+`simpici-dispatch` of this version fails every claim over such a grant, as
+it did over one it could not read, so upgrade the configuration with the
+program. An older `simpici-dispatch` still writes the details of a failure
+to the worker; the fixed lines begin with this version.
+
+In the containers of sections 3 and 5 the check runs in a container of its
+own, which sees the file as it is on the host now:
+
+```sh
+# Section 3, the daemon image. No Docker socket is needed for the check.
+docker run --rm -v "$PWD/simpici.container.json:/etc/simpici.json:ro" \
+  simpici:local --config /etc/simpici.json --check
+
+# Section 5, the dispatcher: same image, mounts and account as the poller.
+docker compose run --rm poller simpicid --check --config /etc/simpici/dispatcher.json
+```
+
+`docker compose exec poller simpicid --check ...` runs in the container that
+is already there. It works, but it reads the file that container has
+mounted: after an editor replaced `dispatcher.json` on the host, that is
+still the old file, and the check would pass a file that is no longer the
+one a restart reads. Use `run --rm` to check an edit.
 
 ### Accepted clone URLs
 
@@ -591,10 +757,12 @@ VMware is one possible VM environment, not a SimpiCI protocol requirement.
    `systemctl enable --now simpicid` only after checking the paths. The
    daemon reads every granted secret file when it starts and refuses to start
    while a grant is unusable, so its account needs read access to those files,
-   like the account behind the SSH endpoint. Restart it after changing the
-   configuration; the journal names an unusable grant. A repository whose
-   refs cannot be read does not stop the daemon: the journal gets a
-   `not polled` line per cycle, as described in section 2.
+   like the account behind the SSH endpoint. After changing the
+   configuration, [check it](#check-the-configuration-before-you-start-or-restart)
+   as that account and restart the daemon only if the check passes; the
+   journal names an unusable grant too, but only once the old daemon is
+   stopped. A repository whose refs cannot be read does not stop the daemon:
+   the journal gets a `not polled` line per cycle, as described in section 2.
 4. Use a separate key and a fixed worker name for each worker.
    Assign a forced command to the authorized key:
 
@@ -609,7 +777,8 @@ VMware is one possible VM environment, not a SimpiCI protocol requirement.
    shell. A test with `ssh -T simpici@dispatcher id` must not execute `id`;
    it should produce only a protocol error.
 5. Publish only the public report projection; never publish the queue, the
-   secret snapshots in `claims/`, internal events, credentials or workspaces.
+   secret snapshots in `claims/`, the log of failed requests `dispatch.log`,
+   internal events, credentials or workspaces.
 
 ### Understand secret grants
 
@@ -619,12 +788,22 @@ A grant is not a general environment file for all jobs:
 - `events` is an exact list. `refs` lists exact refs or patterns of the form
   `refs/<path>/*`, which match every ref below that path (`refs/tags/*` covers
   each release tag). `*` anywhere else is rejected as a configuration error.
-  Empty or missing lists grant nothing.
+  Both lists have to be there and name something.
 - A pattern on `refs/heads/*` hands the secret to every branch that is polled.
   Prefer exact branch names and reserve patterns for tags.
-- `sources` can further restrict the source.
-- `phases` may contain only `publish` and `deploy`.
+- `sources` can further restrict the source to `git-poll`, `webhook` or
+  `manual`. Without it every source is admitted.
+- `phases` may contain only `publish` and `deploy`, and means both without it.
 - Pull-request events receive no grants.
+- A grant that could never apply is refused like one that cannot be read,
+  because it would look as if it gave a secret to a run and give it to none:
+  `refs` or `events` missing or empty, `events` with `pull_request` alone,
+  `sources` or `phases` given and empty, and any grant of a repository whose
+  name has a control character. So is a grant with an entry that can match
+  nothing: a source that is none of the three, or an exact ref that is no
+  full ref name, such as `main` in place of `refs/heads/main`. The names in
+  `events` are not checked beyond that: an event is free text, and a grant
+  for `psuh` is accepted and applies to nothing.
 - `name` is the environment variable the job sees: `CICD_<NAME>` or
   `<NAME>_TOKEN` in capitals. A variable the executor assigns itself is
   rejected as a name, because the executor's value would win: everything in
@@ -641,21 +820,35 @@ A grant is not a general environment file for all jobs:
   Otherwise, the source actually used for the run determines the outcome.
 
 The grants of all repositories are checked together, whether or not a run
-would match them: when `simpicid` starts in dispatcher mode, and again by
-`simpici-dispatch` before every claim. The check covers the name, the ref
-patterns, the list shapes, the phases and the secret file, which must be
-readable and hold one nonempty line without the marker `[REDACTED]`. A
-failure names the configuration entry and the reason, never a value:
+would match them: when `simpicid` starts in dispatcher mode, by
+`simpicid --check`, and again by `simpici-dispatch` before every claim. The
+check covers the name, the ref patterns, the list shapes, the phases, what
+is said above about grants that could never apply, and the secret file,
+which must be readable and hold one nonempty line without the marker
+`[REDACTED]`. A failure names the configuration entry and the reason:
 
 ```text
-SimpiCI::Dispatcher repository acme/example (repositories[0]), secret CICD_REGISTRY_PASSWORD (secrets[0]): cannot read secret file /etc/simpici/secrets/registry-password: No such file or directory
+SimpiCI::Dispatcher repository acme/example (repositories[0]), secret CICD_REGISTRY_PASSWORD (secrets[0]): cannot read secret file: No such file or directory
+SimpiCI::Dispatcher repository acme/example (repositories[0]), secret PUBLISH_TOKEN (secrets[1]): invalid ref pattern (refs[0])
+SimpiCI::Dispatcher repository acme/example (repositories[0]), secret ? (secrets[2]): invalid secret name
+SimpiCI::Dispatcher repository acme/example (repositories[0]), secret DEPLOY_TOKEN (secrets[3]): events must name at least one event: the grant would apply to no run
 ```
 
+It never repeats what stands in the grant: not the value, not the path of
+the secret file, not a ref pattern, not a name that is none. A value that
+was put into the wrong field would otherwise be written to the journal. The
+entry is found by its position: `secrets[1]` is the second grant of the
+repository, `refs[0]` its first ref.
+
 `simpicid` then exits before it polls. `simpici-dispatch` fails the claim
-without taking a lease: the message reaches the worker's log, queued runs stay
-queued, and they are served once the configuration is usable again. One
-unusable grant therefore stops the claims of every repository, not only its
-own. The completion of a run that was already claimed is still accepted.
+without taking a lease: queued runs stay queued, and they are served once
+the configuration is usable again. One unusable grant therefore stops the
+claims of every repository, not only its own. The worker that asked is told
+`simpici-dispatch: configuration unusable` and no more, since the grant may
+be one of another project; the line above is written to `dispatch.log` on
+the dispatcher, see
+[when a request of a worker fails](#when-a-request-of-a-worker-fails). The
+completion of a run that was already claimed is still accepted.
 
 The example configuration shows the complete current grant structure.
 Files containing secret values belong to the service account, with mode
@@ -748,16 +941,84 @@ claim`: the queue decides both under one lock, and whichever comes first
 stands.
 
 `simpici-dispatch` gives a worker 30 seconds to send its request and ends
-with `simpici-dispatch request not read within 30 s` if it is not complete by
+with `simpici-dispatch: request not read in time` if it is not complete by
 then, so that a sender that hangs does not keep a session. The limit covers
 the reading alone. A request that was read is served to its end, however
 long it waits for the queue or redacts a log of megabytes; ending it in the
 middle would only make the worker send it again. On a slow link, where 8 MiB
 of completion take longer than that, raise the limit with the top-level
 setting `request_read_timeout`, a positive integer of seconds. It is read
-for every request, so it needs no restart, and any other value fails every
-request with `simpici-dispatch request_read_timeout must be a positive
-integer`.
+for every request, so it needs no restart. Any other value keeps `simpicid`
+from starting and fails every request with `simpici-dispatch: configuration
+unusable`.
+
+#### When a request of a worker fails
+
+`simpici-dispatch` runs as a forced command. Its standard error is standard
+error of the `ssh` of the worker and ends in the journal of the build VM.
+The configuration it reads names the repositories and secret files of every
+project the dispatcher serves, so a worker is told exactly one line, with
+one of five reasons, and the program ends with the exit status 1:
+
+| Line in the journal of the worker | What it covers |
+| --- | --- |
+| `simpici-dispatch: configuration unusable` | The configuration file cannot be read, is no JSON object or has no usable `root`; `request_read_timeout` is no positive integer; for a claim, a grant cannot be used or `timeout` is no positive integer |
+| `simpici-dispatch: request not read in time` | The request was not complete within `request_read_timeout` |
+| `simpici-dispatch: request too large` | The request is larger than 8 MiB |
+| `simpici-dispatch: invalid request` | The request is not what the protocol has: no JSON object, no `claim` or `finish`, a run that is no number, a log that is no text of at most 4 MiB |
+| `simpici-dispatch: internal error` | Everything else: the queue cannot be locked, read or written, a secret snapshot cannot be removed, the worker name of the forced command is not one the queue accepts |
+
+The worker adds its own `dispatcher connection failed` line and asks again
+in its next cycle. Nothing in these lines names a repository, a secret, a
+file or a place in the program, whichever project the mistake belongs to.
+
+**The details are on the dispatcher, in `<root>/dispatch.log`**, the `root`
+of the configuration: `/var/lib/simpici/dispatch.log` with the supplied
+unit, `state/dispatch.log` beside `compose.yaml` in section 5.
+
+```text
+2026-10-04T10:15:02Z worker vm1: configuration unusable: SimpiCI::Dispatcher repository acme/example (repositories[0]), secret CICD_REGISTRY_PASSWORD (secrets[0]): cannot read secret file: No such file or directory
+2026-10-04T10:15:12Z worker vm1: request not read in time: simpici-dispatch request not read within 30 s
+2026-10-04T10:15:40Z worker vm.2: internal error: SimpiCI::Queue invalid worker at … line N.
+```
+
+- One line for each finding, with the time in UTC, the worker name of the
+  forced command, the reason the worker was told and the detail. An unusable
+  configuration gets a line for every grant that cannot be used.
+- A line holds no value of the configuration and nothing of the request. It
+  is one line, with control characters shown as `?`.
+- The file belongs to the account of the forced command and is readable by
+  it alone. It is private state: do not publish it.
+- It does not grow without end. At 1 MiB it becomes `dispatch.log.1`, in
+  place of the file of that name, and a new one begins. A worker that asks
+  every ten seconds against a broken configuration fills that megabyte in
+  less than a day; the two files are all it ever takes.
+- A request that is served writes nothing. The file is no access log. The
+  one exception is a warning of Perl during a request, which is kept from
+  the worker like every detail and is a line with `warning` in the place of
+  the reason; the request is served all the same.
+
+Why a file: a forced command has no other place. The SSH server logs that a
+key connected, in the journal on a host and in `docker compose logs ssh` in
+section 5, but not what the command said. The journal of `simpicid` has what
+the daemon found when it started and not what a request found later, after
+an edit of the file or the rotation of a secret. A system log is not there
+in the dispatcher container.
+
+Two failures leave no line, because the log lies below a state root that is
+not known then: a configuration file that cannot be read or decoded, and
+one without a usable `root`. The worker is told `configuration unusable`;
+[check the configuration](#check-the-configuration-before-you-start-or-restart)
+as the account of the forced command to see why. If the state root cannot be
+written, the request fails as it would have and nothing is logged either.
+
+`simpici-dispatch` checks less than the daemon: the file, `root`,
+`request_read_timeout` and, for a claim, the grants and `timeout`. A
+`timeout` that is no positive integer therefore fails every claim before a
+lease is taken, instead of handing each worker a claim it has to abort.
+Clone URLs, `refs` and the other settings are for `simpicid` and its
+`--check`. The completion of a run that was claimed is recorded whatever the
+grants and the `timeout` are.
 
 #### A claim that never reached its worker
 
@@ -873,7 +1134,9 @@ being accepted, and they end differently.
 connection, it timed out, `simpici-dispatch` ended with an error such as an
 unreadable configuration or a state directory it cannot lock or write, or
 its answer did not arrive whole. The journal of the worker gets one of these
-lines per cycle, below whatever `ssh` or `simpici-dispatch` wrote:
+lines per cycle, below whatever `ssh` wrote or the one line of
+`simpici-dispatch`, whose details are on the dispatcher, see
+[when a request of a worker fails](#when-a-request-of-a-worker-fails):
 
 ```text
 simpici-worker: SimpiCI::Worker dispatcher connection failed at /usr/local/bin/simpici-worker line N.
@@ -1319,11 +1582,29 @@ the image build context. Set `SIMPICI_SSH_PORT` if 2222 is taken on the host.
 
 The state directory holds the queue and the public report projection under
 `state/public/runs`; section 7 applies to publishing it. After changing
-`dispatcher.json`, run `docker compose restart`: the poller reads it only at
-startup, and a file replaced by an editor is not visible through the mount
-before that. Secret files are read at each claim, so a rotated value needs no
-restart. The poller also reads them once when it starts and exits if a grant
-is unusable; `docker compose logs poller` names it.
+`dispatcher.json`, check it and then restart:
+
+```sh
+docker compose run --rm poller simpicid --check --config /etc/simpici/dispatcher.json \
+  && docker compose restart
+```
+
+The poller reads the file only at startup, and a file replaced by an editor
+is not visible through the mount before that, in either service: the `ssh`
+service serves requests from the old file until it is restarted too. The
+check runs in a container of its own, with the image, the mounts and the
+account of the poller, and therefore sees the new file and reads the secret
+files as the poller will;
+[check the configuration](#check-the-configuration-before-you-start-or-restart)
+describes its output. Secret files are read at each claim, so a rotated
+value needs no restart. The poller also reads them once when it starts and
+exits if a grant is unusable; `docker compose logs poller` names it.
+
+A request of a worker that fails is not in `docker compose logs`: the `ssh`
+service logs connections, and the worker is told one fixed line. The details
+are in `state/dispatch.log`, written by the forced command as the `simpici`
+account, see
+[when a request of a worker fails](#when-a-request-of-a-worker-fails).
 
 What the poller has recorded for a repository is shown, and one ref of it
 forgotten, with `simpici` inside the poller service:

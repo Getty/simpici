@@ -54,4 +54,25 @@ my ( $poller ) = $dir->child('compose.yaml')->slurp_utf8 =~ /^  poller:\n((?:   
 like $poller // '', qr/^    user: "\Q$uid:$gid\E"$/m,
   'the poller service, and with it a command started in it, runs as the account of the image';
 
+# The unit checks the configuration before it starts the daemon: the same
+# file, and as the account of the service, which a "+" or "!" in front of
+# the command would take away.
+my $unit = path('deploy/simpicid.service')->slurp_utf8;
+my ( $started ) = $unit =~ /^ExecStart=(.+)$/m;
+my @before = $unit =~ /^ExecStartPre=(.+)$/mg;
+is \@before, [ ( $started // '' ) =~ s/\A(\S+) /$1 --check /r ],
+  'the unit runs simpicid --check on the configuration of the daemon before it starts it';
+like $started // '', qr{\A/usr/local/bin/simpicid --config /etc/simpici/dispatcher\.json\z},
+  'and starts the daemon as before';
+ok index($unit, 'ExecStartPre=') < index($unit, 'ExecStart='), 'in that order';
+
+# What the operations guide says to run exists.
+my $guide = path('deploy/README.md')->slurp_utf8;
+like $guide, qr/^docker compose run --rm poller simpicid --check --config \/etc\/simpici\/dispatcher\.json/m,
+  'the guide checks the configuration in a container of the poller service';
+is $config->{root}.'/dispatch.log', '/var/lib/simpici/dispatch.log',
+  'and the log of failed requests it names lies in the state volume of both services';
+like $dir->child('compose.yaml')->slurp_utf8, qr{^  ssh:\n(?:    .*\n|\n)*?      - \./state:/var/lib/simpici$}m,
+  'which the ssh service mounts';
+
 done_testing;

@@ -85,4 +85,19 @@ for my $clone_url (
   unlike $died, qr/src\.ci|sunriser|program/, 'without repeating it';
 }
 
+# The two rules a grant of the dispatcher is held against: a grant for a
+# source or a ref that no event can have applies to no run.
+is [ SimpiCI::Event->sources ], [qw( git-poll webhook manual )], 'an event has one of three sources';
+ok lives { SimpiCI::Event->new(%args, source => $_) }, 'the source '.$_.' is accepted'
+  for SimpiCI::Event->sources;
+like dies { SimpiCI::Event->new(%args, source => 'cron') }, qr/source/, 'another source is refused';
+is(scalar(SimpiCI::Event->ref_rejection($_)), undef, 'the ref '.$_.' is one an event can carry')
+  for 'refs/heads/main', 'refs/tags/1.0', 'refs/heads/feature/x';
+is(scalar(SimpiCI::Event->ref_rejection($_)), 'ref must start with refs/', $_.' does not start with refs/')
+  for 'main', 'heads/main', '../master', '';
+is(scalar(SimpiCI::Event->ref_rejection($_)), 'ref is not canonical', 'refs/... with something a ref name cannot hold is not canonical')
+  for 'refs/heads/ma in', 'refs/heads/*', 'refs/heads/a..b', 'refs/heads/main.lock', 'refs/heads/', "refs/heads/a\tb";
+like dies { SimpiCI::Event->new(%args, ref => 'refs/heads/ma in') }, qr/\ASimpiCI::Event ref is not canonical at /,
+  'the constructor refuses with the same words';
+
 done_testing;

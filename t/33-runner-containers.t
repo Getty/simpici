@@ -139,6 +139,7 @@ case "${TEST_BEHAVIOUR:-end}" in
     # The report of the run becomes a directory: it cannot be replaced.
     report="$TEST_ROOT/public/runs/$CICD_RUN_NUMBER.json"
     rm "$report"; mkdir "$report"
+    : > "$TEST_STATE/unreportable"
     sleep 60 & wait ;;
 esac
 SCRIPT
@@ -452,6 +453,9 @@ for my $signal (sort keys %number) {
 subtest 'a supervisor that is told to end and cannot report the run' => sub {
   my $scene = scene(TEST_BEHAVIOUR => 'unreportable', TEST_START => "@own");
   my $pid = supervise($scene);
+  # Not before the executor has put the directory in the place of the
+  # report: its pid is written first.
+  ok wait_for($scene->{state}->child('unreportable'), 30), 'the report cannot be written any more';
   kill 'TERM', $pid;
   waitpid($pid, 0);
   is $? & 127, 15, 'ends by the signal all the same';

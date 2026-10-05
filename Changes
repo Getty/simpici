@@ -3,49 +3,37 @@
     checkouts, filesystem state and public JSON/log reports. Local logs are
     unredacted; worker uploads redact assigned secret values.
   - Poll GitHub and Forgejo mirrors with independent observations, including
-    newly appearing refs after initial polling. Shared durable run
-    deduplication is provided by the dispatcher queue. A repository whose refs
-    cannot be read (git ls-remote fails), or that returns none of the
-    configured refs although its last poll saw some, does not stop simpicid: it
-    logs one "not polled" line naming the repository, its clone URL and the
-    reason, polls the remaining repositories, keeps
-    the recorded tips and tries again in the next cycle, so refs that return
-    are not built as new. A repository that has no refs at all at its first
-    poll, such as a mirror before its first synchronisation, is not polled
-    either ("repository has no refs yet"): it gets no baseline and is read
-    again in the next cycle, so its refs are a first observation when they
-    arrive and build_initial decides. A project created empty with
-    build_initial: false does not build its first push. A repository that has
-    refs, but none of the configured ones, gets an empty baseline. A mirror
-    that is only partly synchronised is not recognised and must be complete
-    before it is polled. simpicid --once polls every repository and exits
-    with 1 if one was not polled. SimpiCI::Source::GitPoll offers observe and
-    rejection; poll accepts an observation. The poller merges an observation
-    into the recorded tips instead of replacing them: a ref that disappears
-    while others stay keeps its last tip, so back on the same commit it
-    starts no run, on another commit it does. The state of a repository never
-    drops a ref by itself; simpici --forget takes one out.
-  - The poller locks the recorded tips of a repository from reading to
-    writing, so a second simpicid on the same root loses no tip and builds
-    nothing twice, and writes them only when they change. The state also
-    lists the refs the last poll did not see. simpici --config FILE --state
-    shows what is recorded for each repository; simpici --config FILE
+    refs that appear after the first poll; the dispatcher queue deduplicates
+    runs. A repository that cannot be read, that returns none of the
+    configured refs its last poll saw, or that has no refs yet is logged in
+    one "not polled" line and read again in the next cycle, while the others
+    are polled; simpicid --once then exits with 1. Recorded tips are merged,
+    never dropped: a ref that returns on the same commit starts no run. A
+    mirror must be complete before it is polled, a partly synchronised one is
+    not recognised.
+  - The recorded tips of a repository are locked from reading to writing and
+    written only when they change. simpici --config FILE --state shows them;
     --repository NAME --forget REF takes one ref out (exit 0 forgotten, 1 not
-    recorded, 2 repository not configured). A forgotten ref the repository
-    still has is built as new at the next poll. The "not polled" line for a
-    repository that returns no refs reads "configured refs seen at the last
-    poll: N", counts only such refs and is a signal, no protection. A ref
-    outside the refs filter keeps its tip. The dispatcher image has a
-    simpici wrapper.
+    recorded, 2 repository not configured), and a forgotten ref the
+    repository still has is built as new at the next poll. The dispatcher
+    image has a simpici wrapper.
   - simpicid gives up on a repository whose refs are not read within
-    ls_remote_timeout seconds (new top-level setting, default 60, shared by
-    all queries made for one repository in a cycle), logs it as
-    not polled and goes on with the next one. git ls-remote runs in its own
-    process group that is ended together with its helpers, and it does not
-    answer prompts on the terminal. A remote that prints a lot on standard
-    error does not block the poller.
-  - simpicid checks every configured repository when it starts, in local and
-    in dispatcher mode, and exits before it polls if one is refused. The
+    ls_remote_timeout seconds (top-level setting, default 60, shared by all
+    queries made for one repository in a cycle) or that prints more than
+    16 MiB on standard output or 1 MiB on standard error, logs it as not
+    polled and goes on with the next one. git ls-remote runs in its own
+    process group, which is ended at the limit and when simpicid gets TERM,
+    INT or HUP, and it does not answer prompts on the terminal. The "not
+    polled" line is one line without control characters and carries at most
+    1000 characters of what the remote printed.
+  - simpicid checks its configuration when it starts, in local and in
+    dispatcher mode, and exits with 3 before it polls if anything is refused.
+    simpicid --check --config FILE makes the same check without polling and
+    prints every finding (exit 0, 1 with errors, 64 for a usage error; unknown
+    keys are warnings); the systemd unit runs it as ExecStartPre. interval,
+    timeout, ls_remote_timeout and request_read_timeout are positive integers,
+    mode is local or dispatcher, root is required in dispatcher mode, refs is
+    a list of nonempty strings and build_initial a boolean. The
     repositories setting must be a list of objects, each with a nonempty name
     and clone_url; an entry of another shape, such as a bare URL, is refused
     by its position, and a configuration without repositories does not start,
@@ -76,26 +64,25 @@
     A grant ref is exact or a refs/<path>/* pattern (refs/tags/* covers every
     release tag); any other use of "*" is rejected as a configuration error.
     Every grant is checked when simpicid starts in dispatcher mode and before
-    each claim: an unusable one (name, ref pattern, phases, secret file) is
-    reported with its repository and secret, simpicid does not start, and no
-    lease is taken, while completions are still accepted. A secret name may
+    each claim: an unusable one (name, ref pattern, phases, secret file) or
+    one that can never match (no refs, events or phases, only pull_request
+    events, an unknown source, a ref no event can carry) is reported with its
+    repository and secret, never with the pattern, the path of the secret
+    file or an invalid name; simpicid does not start, and no lease is taken,
+    while completions are still accepted. A secret name may
     not be any variable the executor assigns itself (CICD_BRANCH, CICD_TAG,
     CICD_REGISTRY, CICD_REGISTRY_USER, ...); only CICD_REGISTRY_PASSWORD
     passes through. In dispatcher mode simpicid needs read access to the
     granted secret files.
-  - simpici-worker reports a claim it cannot execute as a failed run with
-    exit code 125 instead of leaving it to its lease: an event it refuses, a
-    claim of the wrong shape, secret files it cannot write, a failure of the
-    run supervisor. The uploaded log ends with "SimpiCI::Worker run N
-    aborted: <reason>", where the reason is one of nine fixed ones
-    (SimpiCI::Worker->abort_reasons): no path below the worker root, no file
-    or line of the installation and no value of the claim is published. The
-    error itself is written to standard error of the worker, in the same
-    line, with assigned secret values redacted. The event and the timeout
-    are checked before any secret file is written, so a claim without an
-    integer timeout is refused first, and secrets/<run>/ is removed whichever
-    way the run ends. A claim whose run is not a run number is refused before
-    anything is written.
+  - simpici-worker reports a claim it cannot execute (an event it refuses, a
+    claim of the wrong shape, secret files it cannot write, a failed run
+    supervisor) as a failed run with exit code 125 instead of leaving it to
+    its lease. The uploaded log ends with "SimpiCI::Worker run N aborted:
+    <reason>", one of nine fixed reasons (SimpiCI::Worker->abort_reasons)
+    without a path or a value of the claim; the error itself goes to standard
+    error of the worker, secret values redacted. The claim is checked before
+    any secret file is written, and secrets/<run>/ is removed whichever way
+    the run ends.
   - The runner makes the checkout quietly, so that a log no longer begins
     with the path of the state root, and a command that cannot be started is
     logged as "SimpiCI::Runner cannot start git" or "cannot start the
@@ -121,7 +108,11 @@
     again.
   - simpici-dispatch limits only the reading of a request (30 s, top-level
     setting request_read_timeout); a request that was read is served to its
-    end, however long redaction takes.
+    end, however long redaction takes. A request it cannot serve is answered
+    with one line, "simpici-dispatch: <reason>", and exit 1, the reason being
+    one of five fixed ones (SimpiCI::Dispatcher->failure_reasons); the details
+    and any Perl warning go to dispatch.log below the state root (mode 0600,
+    set aside once at 1 MiB), not to the worker.
   - A completion the dispatcher can never accept (unknown run, stale claim,
     expired claim) is answered with {"rejected": reason}. The worker moves it
     to rejected/<run>.json, names it in one line on standard error and claims

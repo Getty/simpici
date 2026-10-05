@@ -3,6 +3,7 @@
 # ABSTRACT: Run one normalized SimpiCI event, or show and forget recorded tips
 use strict;
 use warnings;
+our $VERSION = '0.001';
 
 use SimpiCI::App::Run;
 

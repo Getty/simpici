@@ -73,13 +73,17 @@ $store->write_json('queue/2.json', {
 my $program = path('bin/simpici-worker')->absolute;
 my $output = qx{"$ENV{TEST_PERL}" -I"$ENV{TEST_LIB}" "$program" --dispatcher test-host --root "@{[ $worker_store->root ]}" --once 2>&1};
 is $? >> 8, 0, 'simpici-worker survives a claim it refuses';
+# What the rule says of this URL, asked of the rule: its wording is not
+# repeated here.
+my $refused_for = SimpiCI::Event->clone_url_rejection($refused_url);
+ok defined $refused_for && $refused_for !~ /\n/, 'the clone URL rule refuses the URL of the claim, in one line';
 like $output,
-  qr/\ASimpiCI::Worker run 2 aborted: invalid event in claim: SimpiCI::Event clone URL must be a URL of the scheme [^\n]* or an absolute path at [^\n]+\n\z/,
+  qr/\ASimpiCI::Worker run 2 aborted: invalid event in claim: SimpiCI::Event \Q$refused_for\E at [^\n]+ line \d+\.\n\z/,
   'and names the run, the reason and what the event was refused for in one line on standard error';
 unlike $output, qr/transport-secret-value|hunter2-in-url/, 'without the secret or the URL';
 # What the error said, and where it was raised, is no part of the reason:
 # the log is public.
-my $private_path = qr/ line \d+|\.pm\b|\Q$ENV{TEST_LIB}\E|\Q@{[ $worker_store->root ]}\E/;
+my $private_path = qr/ line \d+|\bSimpiCI\/\w+\.pm\b|\Q$ENV{TEST_LIB}\E|\Q@{[ $worker_store->root ]}\E/;
 like $responses->slurp_utf8, qr/"PUBLISH_TOKEN":"transport-secret-value"/,
   'the claim did carry the secret';
 is [ $store->root->child('claims')->children ], [],

@@ -64,29 +64,95 @@ ok dispatcher_for(grant(), grant(name => 'CICD_REGISTRY_PASSWORD', phases => ['p
   'usable grants pass';
 ok dispatcher_for()->validate, 'a repository without grants passes';
 
+my $no_run = ': the grant would apply to no run';
 for my $case (
-  [{refs => ['refs/tags/*', 'refs/*']}, qr/invalid ref pattern: refs\/\*/, 'ref pattern'],
+  [{refs => ['refs/tags/*', 'refs/*']}, qr/invalid ref pattern \(refs\[1\]\) at /, 'ref pattern'],
   [{refs => 'refs/tags/*'}, qr/refs must be a list/, 'refs that are no list'],
   [{events => 'push'}, qr/events must be a list/, 'events that are no list'],
   [{sources => 'git-poll'}, qr/sources must be a list/, 'sources that are no list'],
   [{phases => 'publish'}, qr/phases must be a list/, 'phases that are no list'],
   [{phases => ['publish', 'build']}, qr/secrets only allowed in publish\/deploy/, 'phase outside publish/deploy'],
-  [{file => "$missing"}, qr/cannot read secret file \Q$missing\E: No such file/, 'missing secret file'],
+  [{file => "$missing"}, qr/cannot read secret file: No such file or directory at /, 'missing secret file'],
   [{file => undef}, qr/secret file missing/, 'grant without a file'],
   [{file => "$empty"}, qr/secret must be one nonempty line/, 'empty secret file'],
   [{file => "$two_lines"}, qr/secret must be one nonempty line/, 'secret file with two lines'],
   [{file => "$marked"}, qr/secret must not contain \[REDACTED\], the marker of a redacted value/,
-    'secret that holds the redaction marker']
+    'secret that holds the redaction marker'],
+  # Grants that no event could ever match.
+  [{refs => []}, qr/refs must name at least one ref or pattern\Q$no_run\E at /, 'an empty list of refs'],
+  [{refs => undef}, qr/refs must name at least one ref or pattern\Q$no_run\E at /, 'a grant without refs'],
+  [{events => []}, qr/events must name at least one event\Q$no_run\E at /, 'an empty list of events'],
+  [{events => undef}, qr/events must name at least one event\Q$no_run\E at /, 'a grant without events'],
+  [{events => ['pull_request']},
+    qr/events must name an event other than pull_request, which receives no secret\Q$no_run\E at /,
+    'a grant for pull requests alone'],
+  [{sources => []}, qr/sources must name at least one source if it is given\Q$no_run\E at /,
+    'an empty list of sources'],
+  [{sources => ['git-poll', 'cron']}, qr/sources must be of git-poll, webhook and manual at /,
+    'a source no event has'],
+  [{phases => []}, qr/phases must name publish or deploy if it is given\Q$no_run\E at /,
+    'an empty list of phases'],
+  [{refs => ['refs/tags/*', 'tags/1.0']}, qr/invalid ref \(refs\[1\]\): ref must start with refs\/ at /,
+    'an exact ref outside refs/'],
+  [{refs => ['refs/heads/ma in']}, qr/invalid ref \(refs\[0\]\): ref is not canonical at /,
+    'an exact ref no event carries']
 ) {
   my ( $override, $reason, $label ) = @$case;
-  like dies { dispatcher_for(grant(), grant(%$override))->validate },
+  my $died = dies { dispatcher_for(grant(), grant(%$override))->validate };
+  like $died,
     qr/repository owner\/repo \(repositories\[1\]\), secret CICD_PACKAGE_TOKEN \(secrets\[1\]\): $reason/,
     'reject '.$label.' and name repository and secret';
+  unlike $died // '', qr/\Q$missing\E|refs\/\*|tags\/1\.0|ma in|cron/,
+    'without the path of the secret file or the value that is refused';
 }
-for my $name ('lowercase', 'PLAIN', 'CICD_', '') {
-  like dies { dispatcher_for(grant(name => $name))->validate },
-    qr/repository owner\/repo \(repositories\[1\]\), secret \Q$name\E \(secrets\[0\]\): invalid secret name/,
-    'reject secret name "'.$name.'"';
+ok dispatcher_for(grant(events => ['push', 'pull_request'], sources => ['git-poll', 'manual', 'webhook'],
+  refs => ['refs/heads/main', 'refs/tags/*'], phases => ['deploy']))->validate,
+  'a grant that names pull_request beside another event, every source and one phase passes';
+{
+  my %sourceless = grant()->%*;
+  delete @sourceless{qw( sources phases )};
+  ok dispatcher_for(\%sourceless)->validate, 'sources and phases may be left out';
+}
+for my $name ('lowercase', 'PLAIN', 'CICD_', '', "CICD_\e[2JX", 'glpat-in-the-wrong-place') {
+  my $died = dies { dispatcher_for(grant(name => $name))->validate };
+  like $died, qr/repository owner\/repo \(repositories\[1\]\), secret \? \(secrets\[0\]\): invalid secret name/,
+    'reject a secret name that is none';
+  unlike $died, qr/lowercase|PLAIN|CICD_|\e|glpat/, 'and do not repeat it: it may be the value';
+}
+
+# A repository whose name no event carries has grants that apply to no run.
+# Its name is not printed: it is no line of text.
+{
+  my $config = { repositories => [ { name => "owner/re\e[2Jpo\n", clone_url => '/fixture', secrets => [ grant() ] } ] };
+  my $died = dies { SimpiCI::Dispatcher->new(queue => queue_in('unused'), config => $config)->validate };
+  like $died, qr/\ASimpiCI::Dispatcher repository \? \(repositories\[0\]\), secret CICD_PACKAGE_TOKEN \(secrets\[0\]\): repository name must not contain control characters at /,
+    'reject the grant of a repository whose name has control characters, without the name';
+  unlike $died, qr/[\x00-\x09\x0b-\x1f\x7f]|2J/, 'nothing of it is in the message';
+}
+
+#### Every unusable grant is found
+
+{
+  my $dispatcher = dispatcher_for(grant(file => "$missing"), grant(), grant(name => 'CICD_TWO', refs => []),
+    'CICD_PACKAGE_TOKEN');
+  my $where = 'SimpiCI::Dispatcher repository owner/repo (repositories[1]), secret ';
+  my @expected = (
+    $where.'CICD_PACKAGE_TOKEN (secrets[0]): cannot read secret file: No such file or directory',
+    $where.'CICD_TWO (secrets[2]): refs must name at least one ref or pattern'.$no_run,
+    $where.'? (secrets[3]): grant must be an object'
+  );
+  is [ $dispatcher->problems ], \@expected, 'problems lists every unusable grant, in the order of the configuration';
+  is [ SimpiCI::Dispatcher->problems($dispatcher->config) ], \@expected,
+    'for a configuration that is handed over as well, without a queue';
+  like dies { $dispatcher->validate }, qr/\A\Q$expected[0]\E at /, 'validate croaks with the first of them';
+  is [ dispatcher_for(grant())->problems ], [], 'a usable configuration has none';
+  is [ SimpiCI::Dispatcher->problems({ repositories => 'none' }) ],
+    [ 'SimpiCI::Dispatcher repositories must be a list' ], 'repositories that are no list are one problem';
+  is [ SimpiCI::Dispatcher->problems({ repositories => [ 'bare', { name => 'owner/x', clone_url => '/x',
+    secrets => 'none' } ] }) ],
+    [ 'SimpiCI::Dispatcher repositories[0] must be an object',
+      'SimpiCI::Dispatcher repository owner/x (repositories[1]): secrets must be a list' ],
+    'and so is an entry that is no object and one whose secrets are no list';
 }
 like dies { dispatcher_for(grant(name => undef))->validate },
   qr/repository owner\/repo \(repositories\[1\]\), secret \? \(secrets\[0\]\): invalid secret name/,
@@ -185,8 +251,11 @@ $process_queue->run(SimpiCI::Event->new(%tag_event, commit => 'b' x 40));
 my ( $status, $stdout, $stderr ) = dispatch(
   { root => $process_root, config_for(grant(refs => ['refs/tags/v*']))->%* }, {operation => 'claim'});
 isnt $status, 0, 'simpici-dispatch fails a claim on a broken configuration';
-like $stderr, qr/repository owner\/repo \(repositories\[1\]\), secret CICD_PACKAGE_TOKEN \(secrets\[0\]\): invalid ref pattern: refs\/tags\/v\*/,
-  'and says which repository, which secret and what is wrong';
+is $stderr, 'simpici-dispatch: configuration unusable'."\n",
+  'and tells the worker no more than that';
+like $process_queue->store->root->child('dispatch.log')->slurp_utf8,
+  qr/ worker test-vm: configuration unusable: SimpiCI::Dispatcher repository owner\/repo \(repositories\[1\]\), secret CICD_PACKAGE_TOKEN \(secrets\[0\]\): invalid ref pattern \(refs\[0\]\)\n\z/,
+  'its log says which repository, which secret and what is wrong';
 is $stdout, '', 'and answers nothing';
 is record_of('process', 1)->{state}, 'queued', 'and leaves the run queued';
 

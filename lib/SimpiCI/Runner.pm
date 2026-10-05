@@ -1,4 +1,5 @@
 package SimpiCI::Runner;
+our $VERSION = '0.001';
 
 use Moo;
 

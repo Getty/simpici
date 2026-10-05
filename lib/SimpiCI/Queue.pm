@@ -1,4 +1,5 @@
 package SimpiCI::Queue;
+our $VERSION = '0.001';
 
 use Moo;
 

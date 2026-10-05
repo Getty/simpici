@@ -14,4 +14,6 @@ for my $program (qw( simpici simpicid )) {
     $program.' manual describes the shared executor';
 }
 
+like scalar qx{$^X -Ilib bin/simpicid --help 2>&1}, qr/^\s+--check\b/m, 'simpicid --help lists --check';
+
 done_testing;

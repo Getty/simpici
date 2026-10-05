@@ -129,8 +129,21 @@ sub attempt {
 sub report { $json->decode($root->child('public/runs/'.$_[0].'.json')->slurp_utf8) }
 
 # Where Perl says an error was raised, " at FILE line N." after the message,
-# or any module file at all.
-my $raised_at = qr/ at \S.* line \d+|\.pm\b/;
+# or a file of this installation: the directories its modules and programs
+# were loaded from, and the path of each of its modules below any directory.
+# A module of somebody else that a job names is none of them.
+my $raised_at = do {
+  my @modules = grep { m{\ASimpiCI(?:/|\.pm\z)} } keys %INC;
+  my %directory = map { path($_)->absolute->stringify => 1 } path('lib'), path('bin'),
+    map { $INC{$_} =~ s{/\Q$_\E\z}{}r } @modules;
+  my $files = join '|', map { quotemeta } sort( keys %directory ), sort @modules;
+  qr/ at \S.* line \d+|$files/;
+};
+ok 'died at /opt/simpici/lib/SimpiCI/Worker.pm line 7.' =~ $raised_at
+  && path('lib/SimpiCI/Runner.pm')->absolute->stringify =~ $raised_at
+  && 'see SimpiCI/Store.pm' =~ $raised_at,
+  'the pattern finds where an error was raised and a file of the installation';
+ok 'cpanm installs Moo.pm and Path/Tiny.pm' !~ $raised_at, 'and takes no other module for one';
 
 sub log_of {
   my $log = $root->child('public/runs/'.$_[0].'.log');
@@ -148,7 +161,11 @@ subtest 'an event the worker refuses' => sub {
   is log_of(1), "SimpiCI::Worker run 1 aborted: invalid event in claim\n",
     'the log is the reason, one of the list, and nothing else';
   unlike log_of(1), qr/\Q$secret\E|\Q$password\E/, 'without a secret value or the URL';
-  like $warned, qr/\ASimpiCI::Worker run 1 aborted: invalid event in claim: SimpiCI::Event clone URL must be a URL of the scheme [^\n]* or an absolute path at [^\n]+ line \d+\.\n\z/,
+  # What the rule says of this URL, asked of the rule: its wording is not
+  # repeated here.
+  my $refused_for = SimpiCI::Event->clone_url_rejection($legacy_url);
+  ok defined $refused_for && $refused_for !~ /\n/, 'the clone URL rule refuses the URL of the claim, in one line';
+  like $warned, qr/\ASimpiCI::Worker run 1 aborted: invalid event in claim: SimpiCI::Event \Q$refused_for\E at [^\n]+ line \d+\.\n\z/,
     'standard error has the reason and what the event was refused for, in one line';
   unlike $warned, qr/\Q$secret\E|\Q$password\E/, 'without a value there either';
   unlike log_of(1), qr/$raised_at|\Q$worker_root\E/,

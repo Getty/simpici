@@ -1,4 +1,5 @@
 package SimpiCI::Role::Secrets;
+our $VERSION = '0.001';
 
 use Moo::Role;
 

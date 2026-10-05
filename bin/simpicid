@@ -3,7 +3,13 @@
 # ABSTRACT: Poll Git repositories and execute SimpiCI runs
 use strict;
 use warnings;
+our $VERSION = '0.001';
 
 use SimpiCI::App::Eventd;
 
-exit SimpiCI::App::Eventd->run(@ARGV);
+# Not left to die: the exit status of a die is the errno of the moment, and
+# that may be the 1 by which --once and --check say something else.
+my $status = eval { SimpiCI::App::Eventd->run(@ARGV) };
+exit $status if defined $status;
+print STDERR $@;
+exit 3;

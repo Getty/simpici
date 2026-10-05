@@ -1,4 +1,5 @@
 package SimpiCI::Source::GitPoll;
+our $VERSION = '0.001';
 
 use Moo;
 
@@ -46,6 +47,18 @@ has ls_remote_timeout => (
 has _json => (is => 'lazy');
 
 sub _build__json { JSON::MaybeXS->new(canonical => 1) }
+
+# The class whose stop signals a query is ended by, and that passes one on.
+sub supervisor_class { 'SimpiCI::Runner' }
+
+# What a query may print before it is given up: bytes of refs on standard
+# output, bytes on standard error. And how many characters of standard error
+# an error repeats.
+sub stdout_limit { 16 * 1024 * 1024 }
+
+sub stderr_limit { 1024 * 1024 }
+
+sub message_limit { 1000 }
 
 sub poll {
   my ( $self, $observed ) = @_;
@@ -221,7 +234,11 @@ sub _state {
 sub observe {
   my ( $self ) = @_;
 
-  my @patterns = $self->repository->{refs}->@*;
+  # Said without the value: a string in the place of the list would be
+  # quoted by Perl where it is used as one.
+  my $refs = $self->repository->{refs} // [];
+  croak __PACKAGE__.' refs must be a list' unless ref $refs eq 'ARRAY';
+  my @patterns = @$refs;
   my $deadline = time + $self->ls_remote_timeout;
   my $observed = $self->_ls_remote($deadline, @patterns);
   # No match and no baseline: only the whole repository tells a filter that
@@ -240,9 +257,14 @@ sub _ls_remote {
   my $limit = $self->ls_remote_timeout;
   my $result = $self->_capture($deadline - time,
     'git', 'ls-remote', '--', $self->repository->{clone_url}, @patterns);
-  croak __PACKAGE__.' git ls-remote timed out after '.$limit.' s'
-    .( length $result->{stderr} ? ': '.$result->{stderr} : '' ) if $result->{timed_out};
-  croak __PACKAGE__.' git ls-remote failed: '.$result->{stderr} if $result->{status} != 0;
+  my $said = $self->_said($result->{stderr});
+  $said = ': '.$said if length $said;
+  # An answer that was cut off is none: nothing of it is taken for refs.
+  croak __PACKAGE__.' git ls-remote stopped by signal '.$result->{stopped} if defined $result->{stopped};
+  croak __PACKAGE__.' git ls-remote printed more than '.$result->{exceeded}{limit}.' bytes on '
+    .$result->{exceeded}{output}.$said if $result->{exceeded};
+  croak __PACKAGE__.' git ls-remote timed out after '.$limit.' s'.$said if $result->{timed_out};
+  croak __PACKAGE__.' git ls-remote failed'.$said if $result->{status} != 0;
   my %observed;
   for my $line (split /\n/, $result->{stdout}) {
     my ( $commit, $ref ) = split /\s+/, $line, 2;
@@ -256,14 +278,49 @@ sub _ls_remote {
   return \%observed;
 }
 
+# What a command printed on standard error, as one line of text of a length
+# a log can take: of a long text the beginning and the end, where git says
+# what it gave up for.
+sub _said {
+  my ( $self, $text ) = @_;
+
+  $text =~ s/\s+/ /g;
+  $text =~ s/\A | \z//g;
+  $text =~ s/[\x00-\x1f\x7f]/?/g;
+  my $limit = $self->message_limit;
+  return $text if length $text <= $limit;
+  my $head = int($limit / 3);
+  return substr($text, 0, $head).' [...] '.substr($text, $head - $limit);
+}
+
 sub _capture {
   my ( $self, $timeout, @command ) = @_;
 
+  my $result = $self->_capture_holding_signals($timeout, @command);
+  # Passed on with the handlers of the caller in place again: the signal
+  # ends this process as it would have without a query, unless the caller
+  # has something to finish first.
+  $self->supervisor_class->end_by($result->{stopped}) if defined $result->{stopped};
+  return $result;
+}
+
+sub _capture_holding_signals {
+  my ( $self, $timeout, @command ) = @_;
+
+  # The command gets a process group of its own, so a signal that ends this
+  # process does not reach it. For as long as it runs, the signals that end
+  # a supervisor are therefore held here and end the command first.
+  my $stopped;
+  my @signals = $self->supervisor_class->stop_signals_in_effect;
+  local @SIG{@signals} = ( sub { $stopped //= $_[0] } ) x @signals;
   pipe(my $stdout, my $stdout_writer) or croak __PACKAGE__.' cannot create a pipe: '.$!;
   pipe(my $stderr, my $stderr_writer) or croak __PACKAGE__.' cannot create a pipe: '.$!;
   my $pid = fork;
   croak __PACKAGE__.' cannot fork: '.$! unless defined $pid;
   unless ($pid) {
+    # Not the handlers of this process: a signal for the group that arrives
+    # before the command is one must end the child, not be noted in it.
+    $SIG{$_} = 'DEFAULT' for @signals;
     # A process group of its own, as SimpiCI::Runner gives a run: the limit
     # has to reach the helpers git starts, not only git.
     setpgid(0, 0);
@@ -274,19 +331,30 @@ sub _capture {
     print STDERR 'cannot execute '.$command[0].': '.$!."\n";
     POSIX::_exit(126);
   }
+  # From this side as well: a signal for the group must find one.
+  setpgid($pid, $pid);
   close $stdout_writer;
   close $stderr_writer;
 
   # Both pipes are emptied while the command runs, and what ends the wait is
   # the process, not the end of its output: a helper may outlive it with a
-  # pipe still open.
+  # pipe still open. Neither is read beyond its limit.
   my %captured = ( $stdout => '', $stderr => '' );
+  my %limit = ( $stdout => $self->stdout_limit, $stderr => $self->stderr_limit );
+  my %output = ( $stdout => 'standard output', $stderr => 'standard error' );
   my $open = IO::Select->new($stdout, $stderr);
+  my $exceeded;
   my $drain = sub {
     my ( $wait ) = @_;
+    return 0 if $exceeded;
     my @ready = $open->can_read($wait);
     for my $handle (@ready) {
       my $read = sysread $handle, $captured{$handle}, 65536, length $captured{$handle};
+      if ($read && length $captured{$handle} > $limit{$handle}) {
+        substr($captured{$handle}, $limit{$handle}) = '';
+        $exceeded //= { output => $output{$handle}, limit => $limit{$handle} };
+        next;
+      }
       next if $read || ( !defined $read && $!{EINTR} );
       $open->remove($handle);
     }
@@ -295,12 +363,19 @@ sub _capture {
   my $deadline = time + $timeout;
   my $timed_out;
   while (waitpid($pid, WNOHANG) == 0) {
-    if (time >= $deadline) {
+    if (defined $stopped || $exceeded || time >= $deadline) {
       kill 'TERM', -$pid;
-      sleep 1;
+      # A second for whatever the command has to put away, and not the
+      # whole of it once the command is gone.
+      my $grace = time + 1;
+      my $reaped;
+      until ($reaped = waitpid($pid, WNOHANG)) {
+        last if time >= $grace;
+        sleep 0.05;
+      }
       kill 'KILL', -$pid;
-      waitpid($pid, 0);
-      $timed_out = 1;
+      waitpid($pid, 0) unless $reaped;
+      $timed_out = 1 unless defined $stopped || $exceeded;
       last;
     }
     $open->count ? $drain->(0.05) : sleep 0.05;
@@ -310,6 +385,8 @@ sub _capture {
   return {
     status    => $status,
     timed_out => $timed_out,
+    stopped   => $stopped,
+    exceeded  => $exceeded,
     stdout    => $captured{$stdout},
     stderr    => $captured{$stderr}
   };
@@ -356,13 +433,33 @@ the runner.
 
 =head1 METHODS
 
+=head2 stdout_limit
+
+Bytes L</observe> reads of what C<git ls-remote> prints on standard output,
+16 MiB: the refs of one query. A subclass may return another number.
+
+=head2 stderr_limit
+
+Bytes it reads of standard error, 1 MiB.
+
+=head2 message_limit
+
+Characters of standard error an error of L</observe> repeats, 1000.
+
+=head2 supervisor_class
+
+Class that names the signals a query is ended by and passes one on,
+L<SimpiCI::Runner>: its C<stop_signals_in_effect> and its C<end_by>.
+
 =head2 observe
 
   my $observed = $poller->observe;
 
 Reads the configured remote refs once with C<git ls-remote> and returns a hash
 reference of ref names to commit ids. Croaks with the text git printed when
-the remote cannot be read. A remote that answers without a usable ref yields
+the remote cannot be read, and with C<refs must be a list> if the C<refs> of
+the repository are anything but a list or missing; without them every ref is
+asked for. A remote that answers without a usable ref yields
 an empty hash; whether that is acceptable is for L</rejection> to say. Nothing
 is persisted.
 
@@ -401,6 +498,31 @@ but is not waited for either. Standard input is F</dev/null>, and a prompt on
 the controlling terminal is not answered: it stops the helper until the limit
 ends it.
 
+What the command prints is limited as well: L</stdout_limit> bytes of refs
+and L</stderr_limit> bytes on standard error. A command that prints more is
+ended in the same way, at once, and the call croaks with the limit it ran
+into:
+
+  git ls-remote printed more than 16777216 bytes on standard output
+
+Nothing of an answer that was cut off is returned. In each of these errors
+the text of standard error follows as one line of at most L</message_limit>
+characters, with a control character shown as C<?>; of a longer text it is
+the beginning and the end, with C<[...]> in between, since git says at the
+end what it gave up for.
+
+A process group of its own is also out of reach of a signal that ends the
+caller. While the command runs, the call therefore holds the signals
+L<SimpiCI::Runner/stop_signals> names, those the process does not ignore.
+One that arrives ends the command and its group as the limit does, and is
+then passed on through L<SimpiCI::Runner/end_by>, with the handlers of the
+caller in place again: a process without a handler for it ends by the
+signal, and for one that has a handler the call croaks afterwards with
+
+  git ls-remote stopped by signal TERM
+
+A caller that is killed leaves the command behind, without a limit.
+
 =head2 poll
 
   my $reports = $poller->poll;
@@ -408,12 +530,11 @@ ends it.
 
 Compares an observation with persisted state, runs accepted changes, merges
 the observation into that state, and returns an array reference of generated
-reports. Without an
-argument it calls L</observe> itself, so an unreadable remote croaks before
-anything is run or saved. An observation that L</rejection> refuses croaks at
-the same point, with that reason. A caller that has to tell an unusable
-observation from a failing run observes first, asks for the rejection and
-only then passes the result.
+reports. Without an argument it calls L</observe> itself, so an unreadable
+remote croaks before anything is run or saved. An observation that
+L</rejection> refuses croaks at the same point, with that reason. A caller
+that has to tell an unusable observation from a failing run observes first,
+asks for the rejection and only then passes the result.
 
 An observation that is handed over is taken as what L</observe> returned.
 Whether a repository has refs at all is known to L</observe> alone: an empty
@@ -448,19 +569,21 @@ time also when it is empty.
 
   my $reason = $poller->rejection($observed);
 
-Returns why an observation must not be polled, or nothing if it may. The one
-reason is an observation without refs while refs are missed:
+Returns why an observation must not be polled, or nothing if it may. The
+one reason is an observation without refs while refs are missed:
 
   remote returned no refs, configured refs seen at the last poll: 2
 
 Exit status 0 with nothing to show is what C<git ls-remote> gives for a
 reachable repository that has none of the configured refs, such as a mirror
-before its synchronisation. The refusal protects nothing: L</poll> keeps the
-recorded tips against an empty observation as against any other that lacks
-refs. It is a signal, so that a caller can report a repository that lost all
-its refs at once instead of taking it for one without changes, and a refused
-observation changes nothing, so the reason is given again until a ref is
-back or the missed ones are forgotten.
+before its synchronisation.
+
+The refusal protects nothing: L</poll> keeps the recorded tips against an
+empty observation as against any other that lacks refs. It is a signal, so
+that a caller can report a repository that lost all its refs at once instead
+of taking it for one without changes. A refused observation changes nothing,
+so the reason is given again until a ref is back or the missed ones are
+forgotten.
 
 The number counts the refs that are missed: those the last accepted
 observation showed and that L</configured> still selects. A ref that was
@@ -468,8 +591,9 @@ absent before, or that the filter no longer asks for, is not missed. If none
 is, the empty observation is what the filter gives and is acceptable. So is
 one without recorded state: it is the baseline of a repository that has
 refs, but no matching one yet; L</observe> does not return it for a
-repository without any. Reads the recorded state and croaks if it cannot be
-decoded.
+repository without any.
+
+Reads the recorded state and croaks if it cannot be decoded.
 
 =head2 configured
 

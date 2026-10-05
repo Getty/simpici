@@ -8,6 +8,10 @@ User=simpici
 Group=simpici
 UMask=0077
 StateDirectory=simpici
+# The check the daemon makes at its start, with every finding in the journal
+# instead of the first. It reads the configuration and the secret files as
+# this account and writes nothing.
+ExecStartPre=/usr/local/bin/simpicid --check --config /etc/simpici/dispatcher.json
 ExecStart=/usr/local/bin/simpicid --config /etc/simpici/dispatcher.json
 Restart=on-failure
 RestartSec=10

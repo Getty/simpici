@@ -1,6 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
+our $VERSION = '0.001';
 
 # PODNAME: simpici-worker
 # ABSTRACT: Pull exact-revision jobs over an outbound SSH connection
@@ -60,7 +61,14 @@ answer that did not arrive whole are written to standard error as
   simpici-worker: SimpiCI::Worker dispatcher connection failed at ...
   simpici-worker: SimpiCI::Worker invalid dispatcher response at ...
 
-and leave the file where it is. A completion the dispatcher refuses for
+and leave the file where it is. A dispatcher that ends with an error says
+which kind of error on the line above, in one of five fixed phrases and
+nothing else, such as
+
+  simpici-dispatch: configuration unusable
+
+The details are not sent to a worker. The operator of the dispatcher finds
+them in F<dispatch.log> below its state root, see L<simpici-dispatch>. A completion the dispatcher refuses for
 good, because the lease of the run is over, the run is claimed under another
 worker name or token, or the dispatcher does not know the run, is not sent
 again. It is moved to C<rejected/E<lt>runE<gt>.json> below C<--root>, one

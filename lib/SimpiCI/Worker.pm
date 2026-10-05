@@ -1,4 +1,5 @@
 package SimpiCI::Worker;
+our $VERSION = '0.001';
 
 use Moo;
 with 'SimpiCI::Role::Secrets';
@@ -749,8 +750,10 @@ A secret is not one C<NAME=VALUE> line, see L</Secrets of a claim>.
 
 =item C<invalid timeout in claim>
 
-The timeout of the claim is no integer. The dispatcher sends the C<timeout>
-of its configuration as it stands there.
+The timeout of the claim is no integer. A dispatcher of this version refuses
+a claim before it takes the lease if the C<timeout> of its configuration is
+no positive integer, so this is the reason for a claim of an older
+dispatcher, which sent the setting as it stood there.
 
 =item C<cannot write secret files>
 

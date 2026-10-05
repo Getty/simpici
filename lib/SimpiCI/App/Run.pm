@@ -1,10 +1,12 @@
 package SimpiCI::App::Run;
+our $VERSION = '0.001';
 
 use strict;
 use warnings;
 
 # ABSTRACT: Implementation of the simpici operator command
 
+use Carp qw( croak );
 use Getopt::Long qw( GetOptionsFromArray );
 use JSON::MaybeXS;
 use Path::Tiny qw( path );
@@ -75,7 +77,10 @@ sub recorded_tips {
   # Not left to die: its exit status would be the errno of the moment, which
   # may be one of those that say something here.
   my $status = eval {
-    my $config = JSON::MaybeXS->new->decode(path($config_path)->slurp_utf8);
+    # Read as the daemon reads it, and refused in its words: without what
+    # the file holds.
+    my ( $config, $unreadable ) = $class->daemon_class->config_class->read($config_path);
+    croak __PACKAGE__.' '.$config_path.': '.$unreadable if defined $unreadable;
     $class->daemon_class->check_repositories($config);
     my $store = $class->daemon_class->store($config);
     # The state belongs to name and clone URL: a name that is configured with
@@ -326,9 +331,13 @@ L<SimpiCI::Event/clone_url_without_credentials> gives it.
 
 =head2 daemon_class
 
-Class whose reading of the configuration is used: its
+Class whose reading of the configuration is used: the
+L<class|SimpiCI::App::Eventd/config_class> it reads the file with, its
 L<check|SimpiCI::App::Eventd/check_repositories> of the repositories and its
-L<store|SimpiCI::App::Eventd/store>.
+L<store|SimpiCI::App::Eventd/store>. A file that cannot be read, is no JSON
+or no object, and an entry of C<repositories> the daemon would not start
+with, end the request with the exit status 3 and the reason, which repeats
+nothing of the file.
 
 =head2 event_class
 

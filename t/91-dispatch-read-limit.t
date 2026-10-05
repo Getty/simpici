@@ -88,6 +88,15 @@ sub wait_for_end {
 
 sub record { $json->decode($store->root->child('queue/'.$_[0].'.json')->slurp_utf8) }
 
+# The last line of the log of the dispatcher, taken out of it.
+sub last_logged {
+  my $log = $store->root->child('dispatch.log');
+  return '' unless $log->is_file;
+  my @lines = $log->lines_utf8({ chomp => 1 });
+  $log->remove;
+  return $lines[-1] // '';
+}
+
 my $claim = $json->encode({ operation => 'claim' });
 
 #### A sender that does not finish
@@ -112,8 +121,10 @@ for my $case (
   ok $status != 0, $name.': the program fails';
   ok $process->{took} >= 0.9 && $process->{took} < 5, $name.': after the limit, not at once and not much later'
     or diag $process->{took};
-  like $process->{err}->slurp_utf8, qr/\Asimpici-dispatch request not read within 1 s at \S+ line \d+\.\n\z/,
+  is $process->{err}->slurp_utf8, 'simpici-dispatch: request not read in time'."\n",
     $name.': it says so in one line on standard error';
+  like last_logged(), qr/ worker test-vm: request not read in time: simpici-dispatch request not read within 1 s\z/,
+    $name.': and its log names the limit';
   is $process->{out}->slurp_utf8, '', $name.': and answers nothing';
   is record(1)->{state}, 'queued', $name.': no lease is taken';
   close $process->{input};
@@ -163,9 +174,11 @@ for my $case (
   my $process = spawn(configure(request_read_timeout => $value));
   my $status = wait_for_end($process, 10);
   ok defined $status && $status != 0, $name.' as request_read_timeout fails the program at once';
-  like $process->{err}->slurp_utf8,
-    qr/\Asimpici-dispatch request_read_timeout must be a positive integer at \S+ line \d+\.\n\z/,
-    $name.': with the name of the setting';
+  is $process->{err}->slurp_utf8, 'simpici-dispatch: configuration unusable'."\n",
+    $name.': the worker is told that the configuration is unusable';
+  like last_logged(),
+    qr/ worker test-vm: configuration unusable: simpici-dispatch request_read_timeout must be a positive integer\z/,
+    $name.': the log has the name of the setting';
   ok defined $process->{took} && $process->{took} < 5, $name.': before anything is read';
   close $process->{input};
 }

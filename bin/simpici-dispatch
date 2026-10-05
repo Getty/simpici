@@ -1,55 +1,101 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
+our $VERSION = '0.001';
 
 # PODNAME: simpici-dispatch
 # ABSTRACT: Serve one restricted worker request over SSH standard input
 
-use Carp qw( croak );
 use Getopt::Long qw( GetOptions );
 use JSON::MaybeXS;
 use Path::Tiny qw( path );
+use SimpiCI::Config;
 use SimpiCI::Dispatcher;
 use SimpiCI::Queue;
 use SimpiCI::Store;
 
 umask 0077;
-my ($config_path, $worker);
-GetOptions('config=s' => \$config_path, 'worker=s' => \$worker)
-  && $config_path && $worker or croak 'Usage: simpici-dispatch --config FILE --worker NAME';
-my $config = JSON::MaybeXS->new->decode(path($config_path)->slurp_utf8);
-my $read_timeout = $config->{request_read_timeout} // 30;
-croak 'simpici-dispatch request_read_timeout must be a positive integer'
-  unless !ref $read_timeout && $read_timeout =~ /\A[1-9][0-9]*\z/;
-my $input = '';
-{
-  # A sender that hangs must not hold a session for good. The handler only
-  # notes that the time is up: the read it interrupts returns, and the error
-  # is raised here, in one line like every other.
-  my $expired;
-  local $SIG{ALRM} = sub { $expired = 1 };
-  alarm $read_timeout;
-  while (1) {
-    my $read = sysread(STDIN, my $chunk, 65536);
-    croak 'simpici-dispatch request not read within '.$read_timeout.' s' if $expired;
-    next if !defined $read && $!{EINTR};
-    croak 'simpici-dispatch cannot read the request: '.$! unless defined $read;
-    last unless $read;
-    $input .= $chunk;
-    croak 'simpici-dispatch request too large' if length($input) > 8 * 1024 * 1024;
-  }
-  # The request is here. What follows waits for the queue and redacts a log
-  # of megabytes: it takes what it takes, and ending it in the middle would
-  # only make the worker send the same request again.
-  alarm 0;
+my ( $config_path, $worker, $root );
+
+# The end of a request that failed. Standard error of this program is
+# standard error of the ssh of a worker: it gets one of a few fixed reasons
+# and nothing of this installation or of the configuration, which names the
+# repositories and secret files of everybody. What went wrong is written to
+# the log below the state root, once there is a state root to write it to.
+sub fail {
+  my ( $reason, @details ) = @_;
+  SimpiCI::Dispatcher->log_failure($root, $worker, $reason, @details) if defined $root;
+  print STDERR 'simpici-dispatch: '.SimpiCI::Dispatcher->failure_reason($reason)."\n";
+  exit 1;
 }
-my $queue = SimpiCI::Queue->new(
-  store => SimpiCI::Store->new(root => path($config->{root})),
-  lease_seconds => ($config->{timeout} // 3600) + 1800
-);
-my $response = SimpiCI::Dispatcher->new(queue => $queue, config => $config)
-  ->request($worker, JSON::MaybeXS->new->decode($input));
-print JSON::MaybeXS->new(canonical => 1, convert_blessed => 1)->encode($response);
+
+# A warning of Perl is no line for the worker either: it names a file of
+# this installation and may quote what it warns about. It is logged where
+# the failures are, or dropped while there is no place to log it.
+$SIG{__WARN__} = sub {
+  SimpiCI::Dispatcher->log_warning($root, $worker, @_) if defined $root;
+};
+
+sub serve {
+  my ( $config, $unreadable ) = SimpiCI::Config->read($config_path);
+  fail('configuration unusable', 'simpici-dispatch '.$unreadable) if defined $unreadable;
+  my $unusable = SimpiCI::Config->setting_rejection($config, 'root')
+    // ( defined $config->{root} ? undef : 'root is required' );
+  fail('configuration unusable', 'simpici-dispatch '.$unusable) if defined $unusable;
+  $root = $config->{root};
+  my $read_timeout = $config->{request_read_timeout} // 30;
+  $unusable = SimpiCI::Config->setting_rejection($config, 'request_read_timeout');
+  fail('configuration unusable', 'simpici-dispatch '.$unusable) if defined $unusable;
+  my $input = '';
+  {
+    # A sender that hangs must not hold a session for good. The handler only
+    # notes that the time is up: the read it interrupts returns, and the
+    # request is given up here, like every other that fails.
+    my $expired;
+    local $SIG{ALRM} = sub { $expired = 1 };
+    alarm $read_timeout;
+    while (1) {
+      my $read = sysread(STDIN, my $chunk, 65536);
+      fail('request not read in time', 'simpici-dispatch request not read within '.$read_timeout.' s')
+        if $expired;
+      next if !defined $read && $!{EINTR};
+      fail('internal error', 'simpici-dispatch cannot read the request: '.$!) unless defined $read;
+      last unless $read;
+      $input .= $chunk;
+      fail('request too large', 'simpici-dispatch request of more than 8 MiB')
+        if length($input) > 8 * 1024 * 1024;
+    }
+    # The request is here. What follows waits for the queue and redacts a log
+    # of megabytes: it takes what it takes, and ending it in the middle would
+    # only make the worker send the same request again.
+    alarm 0;
+  }
+  # Without what the decoder says: it quotes the text it stopped at, and a
+  # completion carries the token of its lease.
+  my $request;
+  fail('invalid request', 'simpici-dispatch request is no JSON')
+    unless eval { $request = JSON::MaybeXS->new->decode($input); 1 };
+  # A completion needs no timeout, and none that cannot be used keeps it
+  # from being recorded. A claim is refused for it by the dispatcher.
+  my $timeout = defined SimpiCI::Config->setting_rejection($config, 'timeout')
+    ? 3600 : $config->{timeout} // 3600;
+  my $queue = SimpiCI::Queue->new(
+    store => SimpiCI::Store->new(root => path($root)),
+    lease_seconds => $timeout + 1800
+  );
+  my ( $response, $reason, @details ) = SimpiCI::Dispatcher->new(queue => $queue, config => $config)
+    ->serve($worker, $request);
+  fail($reason, @details) if defined $reason;
+  print JSON::MaybeXS->new(canonical => 1, convert_blessed => 1)->encode($response);
+  return 1;
+}
+
+unless (GetOptions('config=s' => \$config_path, 'worker=s' => \$worker) && $config_path && $worker) {
+  print STDERR 'Usage: simpici-dispatch --config FILE --worker NAME'."\n";
+  exit 64;
+}
+# Nothing that is raised on the way reaches the worker as it was raised.
+fail('internal error', ( split /\n/, $@ // '' )[0] // 'unknown error') unless eval { serve() };
 
 =head1 NAME
 
@@ -66,10 +112,10 @@ size-limited JSON claim or finish request on standard input. The dispatcher
 never checks out or executes repository code. Use a dedicated account.
 
 The configuration is read for each request. A claim first checks every secret
-grant of every repository; if one is unusable, the program exits nonzero with
-a message naming the repository, the secret and the reason, and takes no
-lease. A finish request is served without that check, so a completed run is
-not lost to a configuration error.
+grant of every repository and the C<timeout> it hands to the worker; if one
+of them cannot be used, the claim fails with C<configuration unusable> and
+takes no lease. A finish request is served without that check, so a
+completed run is not lost to a configuration error.
 
 A claim leaves the secret values it handed out in C<claims/E<lt>runE<gt>.json>
 below the state root, in the clear, so that the log of the run can be
@@ -90,9 +136,9 @@ The request has to be read within 30 seconds, or within the seconds the
 top-level setting C<request_read_timeout> of the configuration gives. A
 sender that has not finished by then is given up:
 
-  simpici-dispatch request not read within 30 s at /usr/local/bin/simpici-dispatch line N.
+  simpici-dispatch: request not read in time
 
-The program ends with another exit status than 0 and has done nothing: no
+The program ends with the exit status 1 and has done nothing: no
 lease is taken and nothing is recorded, so the worker sends the request
 again. The limit is one for the whole request, not for each piece of it, and
 it exists so that a connection that hangs does not hold a session and a
@@ -106,11 +152,10 @@ limit there would end a completion that was already being recorded, and the
 worker would send the same completion again into the same limit.
 
 C<request_read_timeout> has to be a positive integer. Any other value ends
-every request before it is read:
-
-  simpici-dispatch request_read_timeout must be a positive integer at /usr/local/bin/simpici-dispatch line N.
-
-The setting is read for each request, like the rest of the configuration.
+every request before it is read, with C<configuration unusable> for the
+worker and the name of the setting in the log of the dispatcher, see
+L</A request that fails>. The setting is read for each request, like the
+rest of the configuration.
 
 =head2 A dispatcher that dies while it answers a claim
 
@@ -132,16 +177,89 @@ answered in that way too, with the reason as the only key:
 The reasons are C<unknown run>, C<stale claim> for a run claimed by another
 worker name or token, and C<expired claim> for a lease that is over. The
 worker takes this answer as final, stops sending the completion and keeps it
-aside. Every other failure, such as a configuration that cannot be read, a
-queue that cannot be locked or written, or a request that is not complete or
-was not read in time, ends the program with a message on standard error and
-another exit status than 0, and the worker sends the request again. An exit
+aside. Every other failure ends the program with one line on standard error
+and the exit status 1, and the worker sends the request again. An exit
 status alone never says that a completion was refused: C<ssh> uses 255 for a
 connection it could not make.
 
-The clone URLs of the configuration are not checked here. This program reads
-no remote, and a queued event passed L<SimpiCI::Event> when it was enqueued;
-C<simpicid> refuses a clone URL that is none of L<SimpiCI::Event/CLONE URLS>
-before it polls.
+=head2 A request that fails
+
+Standard error of this program is standard error of the C<ssh> of a worker,
+and ends in the journal of that worker. The configuration it reads names
+the repositories and the secret files of every project the dispatcher
+serves. A worker is therefore told that its request failed and which of five
+things it failed for, in exactly one line, and nothing else:
+
+  simpici-dispatch: configuration unusable
+  simpici-dispatch: request not read in time
+  simpici-dispatch: request too large
+  simpici-dispatch: invalid request
+  simpici-dispatch: internal error
+
+The reasons are those of L<SimpiCI::Dispatcher/failure_reasons>, and
+L<SimpiCI::Dispatcher/A request that fails> says what each of them covers.
+The line carries no repository, no secret name, no path and no place in the
+program, and it is the same whether the mistake is in the entry of the
+worker's own project or of another.
+
+What went wrong is written for the operator of the dispatcher, to
+F<dispatch.log> below the state root, the C<root> of the configuration:
+
+  2026-10-04T10:15:02Z worker vm1: configuration unusable: SimpiCI::Dispatcher repository owner/project (repositories[0]), secret CICD_REGISTRY_PASSWORD (secrets[0]): cannot read secret file: No such file or directory
+  2026-10-04T10:15:12Z worker vm1: request not read in time: simpici-dispatch request not read within 30 s
+  2026-10-04T10:15:40Z worker vm.2: internal error: SimpiCI::Queue invalid worker at ... line N.
+
+One line for each finding: an unusable configuration gets a line for every
+grant that cannot be used, not only for the first. A line has the time in
+UTC, the worker name of the forced command, the reason the worker was told
+and the detail, without a value of the configuration and without anything
+of the request: a request that is no JSON is said to be none, and not shown.
+The file is private state, readable by the account alone. It is set aside
+as F<dispatch.log.1> when it reaches 1 MiB, in place of the file that had
+that name, so a worker that asks every few seconds against a configuration
+that is broken for days fills two files and no more. The third line above
+is that of a worker name with a dot in F<authorized_keys>: the queue takes
+letters, digits, C<_> and C<-> for one. See
+L<SimpiCI::Dispatcher/The log of failed requests>.
+
+A warning of Perl, which would name a file of the installation, is kept
+from the worker in the same way: it is a line of this file with C<warning>
+in the place of the reason, and does not fail the request.
+
+Nothing else receives these lines. The SSH server logs that a worker
+connected, not what the forced command said, and the journal of C<simpicid>
+has only what the daemon itself found when it started.
+
+There is no log before the state root is known: a configuration file that
+cannot be read or decoded, and one whose C<root> is missing or no string,
+fail with C<configuration unusable> and leave no line. Run
+
+  simpicid --check --config /etc/simpici/dispatcher.json
+
+as the account of the forced command. It makes the check a claim makes and
+more, see L<SimpiCI::App::Eventd/Checking the configuration>, and prints
+every finding. If the log cannot be written, because the state root is not
+writable, the request fails as it would have and nothing is logged.
+
+=head2 Exit status
+
+0 for a request that was answered, a refused completion included. 1 for a
+request that failed, with one of the five lines above. 64 for a call without
+C<--config> or C<--worker>, with a line of usage: that is a mistake in
+F<authorized_keys>.
+
+=head2 What of the configuration is checked
+
+For every request: that the file is a JSON object, that C<root> is a
+nonempty string and that C<request_read_timeout>, if set, is a positive
+integer. For a claim in addition: every grant of every repository, see
+L<SimpiCI::Dispatcher/problems>, and that C<timeout>, if set, is a positive
+integer, by the rule of L<SimpiCI::Config/setting_rejection>. A completion
+is recorded whatever the grants and the C<timeout> are.
+
+The clone URLs, the C<refs> and the other settings of the configuration are
+not checked here. This program reads no remote, and a queued event passed
+L<SimpiCI::Event> when it was enqueued; C<simpicid> refuses them before it
+polls, and C<simpicid --check> shows them.
 
 =cut

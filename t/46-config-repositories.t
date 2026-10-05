@@ -208,8 +208,40 @@ is refused({ repositories => [ repository(name => "gr\x{fc}n/two words") ] }), u
 }
 
 is refused({ repositories => [] }), undef, 'an empty list of repositories is accepted';
-is refused({ repositories => [ { name => 'owner/project', clone_url => '/srv/git/project.git' } ] }),
-  undef, 'nothing but the name and the clone URL of an entry is looked at';
+is refused({ repositories => [ { name => 'owner/project', clone_url => '/srv/git/project.git', refs => [] } ] }),
+  undef, 'an entry with a name, a clone URL and a list of refs is accepted';
+
+#### What is polled
+
+# Without a list of refs every cycle would fail in the poller, with what Perl
+# says about the value: the daemon says it at its start.
+for my $case (
+  [ sub { delete $_[0]{refs} }, 'an entry without refs' ],
+  [ sub { $_[0]{refs} = 'refs/heads/'.$token }, 'a string as refs' ],
+  [ sub { $_[0]{refs} = [ 'refs/heads/main', { $token => 1 } ] }, 'an object in refs' ],
+  [ sub { $_[0]{build_initial} = 'not-'.$token }, 'a word as build_initial', 'build_initial must be true or false' ]
+) {
+  my ( $change, $label, $reason ) = @$case;
+  my $entry = repository();
+  $change->($entry);
+  my $died = refused({ repositories => [ repository(), $entry ] });
+  $reason //= 'refs must be a list of ref names or patterns';
+  like $died, qr/\ASimpiCI::App::Eventd repository owner\/project \(repositories\[1\]\): \Q$reason\E at /,
+    'refuse '.$label;
+  hides_the_value($died // '', 'the message is');
+}
+{
+  my @unpolled = ( repository(name => 'owner/good', clone_url => "$good"),
+    { name => 'owner/refless', clone_url => "$good" } );
+  for my $mode (qw( local dispatcher )) {
+    my ( $died, $status, $warnings ) = once(daemon_config('refless-'.$mode, \@unpolled, mode => $mode));
+    like $died, qr/\ASimpiCI::App::Eventd repository owner\/refless \(repositories\[1\]\): refs must be a list of ref names or patterns at /,
+      'simpicid does not start with a repository without refs, mode '.$mode;
+    is [ $warnings, runs_of('refless-'.$mode) ], [ [], [] ],
+      'instead of reporting it as not polled in every cycle';
+    ok !$root->child('refless-'.$mode, 'queue')->exists, 'and nothing is queued';
+  }
+}
 
 #### One wording with the dispatcher
 
