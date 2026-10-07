@@ -1,0 +1,30 @@
+---
+class: standard
+created: 2026-10-07T23:11:39Z
+id: 29
+priority: high
+status: backlog
+tags:
+- dispatcher
+- operator
+title: Einen Lauf im Dispatcher-Betrieb per Kommando wiederholen (Release-Tag auf
+  demselben Commit)
+updated: 2026-10-07T23:11:39Z
+---
+
+Befund vom Hub (2026-10-07), vor dem ersten echten Paket-Release von langertha zu erledigen.
+
+**Was fehlt.** Ein gescheiterter oder abgelaufener Lauf auf einem Release-Tag lässt sich im Dispatcher-Betrieb nicht per Kommando wiederholen. Die Queue nimmt Repository + Ref + Commit nur einmal an (`SimpiCI::Event::deduplication_key`), `simpici --forget` allein baut deshalb nichts, und `deploy/README.md` nennt für denselben Commit ausdrücklich nur einen Handweg: `simpicid` stoppen, `<root>/queue/<run>.json` löschen, Ref vergessen, `simpicid` starten. `simpici --event` ist kein Ersatz: Es läuft lokal ohne Queue mit Quelle `manual`, und die Paket-Grants sind auf `git-poll` beschränkt, der Lauf bekäme also kein Token.
+
+**Warum es jetzt zählt.** Ein Release-Tag ist unveränderlich. Jeder vorübergehende Fehler im Tag-Lauf (Docker Hub, CPAN-Mirror, apt, ein Timeout) endet heute in Handarbeit als Root auf der src.ci-VM, die nur über den Gast-Agenten von bigbird erreichbar ist. Die Spec im Hub (`docs/superpowers/specs/2026-10-02-deb-pakete-simpici-design.md`, Fehlerfälle) nennt als Rückweg `simpici --event`; das trifft im Dispatcher-Betrieb nicht zu.
+
+**Gewünscht.** Ein Kommando des Daemon-Kontos, das einen beendeten Lauf erneut einreiht, etwa `simpici --config FILE --retry RUN`:
+- nur für Läufe in einem Endzustand (`failed`, `timed_out`, `interrupted`, `signalled`), nie für `queued` oder `running`; ein `success` nur mit ausdrücklichem Schalter;
+- neuer Lauf mit neuer Nummer auf demselben Repository, Ref und Commit, Quelle bleibt die des ursprünglichen Events, die Grants gelten wie in der Konfiguration zum Zeitpunkt des Claims;
+- der alte Bericht bleibt unter `public/runs/` stehen und verweist auf den neuen Lauf;
+- nimmt die Sperren, die Poller und `simpici-dispatch` nehmen, ohne `simpicid` anzuhalten;
+- Exit-Status und eine Zeile auf stdout wie bei `--forget`.
+
+**Zu entscheiden beim Bau.** Der Hinweis aus der README bleibt gültig: Ein Publish kann vor dem Abbruch schon gewirkt haben. Das Kommando wiederholt trotzdem, die Jobs müssen idempotent sein (der Paket-Upload behandelt HTTP 409 als Erfolg). Das gehört in die Doku des Kommandos.
+
+**Fertig, wenn** ein Test einen `failed`-Lauf auf einem Tag wiederholt und der zweite Lauf das Secret der Phase `publish` bekommt, ein Test die Ablehnung für `running` und `queued` zeigt, und `deploy/README.md` den Handweg durch das Kommando ersetzt.
