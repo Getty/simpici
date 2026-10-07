@@ -1,0 +1,71 @@
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":26,"ts":"2026-10-04T07:06:48Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":26,"ts":"2026-10-04T07:37:01Z"}
+{"action":"handoff","agent":"simpici","detail":"review","task_id":26,"ts":"2026-10-04T07:37:22Z"}
+{"action":"edit","agent":"simpici","detail":"review","task_id":26,"ts":"2026-10-04T07:37:33Z"}
+{"action":"move","agent":"simpici","detail":"done","task_id":26,"ts":"2026-10-04T07:40:02Z"}
+{"action":"edit","agent":"simpici","detail":"done","task_id":26,"ts":"2026-10-04T07:40:06Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":25,"ts":"2026-10-04T07:40:18Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":25,"ts":"2026-10-04T07:46:31Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":25,"ts":"2026-10-04T07:46:50Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":25,"ts":"2026-10-04T07:52:55Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":25,"ts":"2026-10-04T08:02:54Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":25,"ts":"2026-10-04T08:03:06Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":25,"ts":"2026-10-04T08:03:17Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":25,"ts":"2026-10-04T08:03:37Z"}
+{"action":"handoff","agent":"simpici","detail":"review","task_id":25,"ts":"2026-10-04T08:03:49Z"}
+{"action":"edit","agent":"simpici","detail":"review","task_id":25,"ts":"2026-10-04T08:06:12Z"}
+{"action":"move","agent":"simpici","detail":"done","task_id":25,"ts":"2026-10-04T08:06:16Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":24,"ts":"2026-10-04T08:06:30Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":24,"ts":"2026-10-04T08:14:35Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":24,"ts":"2026-10-04T08:14:46Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":24,"ts":"2026-10-04T08:25:48Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":24,"ts":"2026-10-04T08:37:26Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":24,"ts":"2026-10-04T08:37:45Z"}
+{"action":"handoff","agent":"simpici","detail":"review","task_id":24,"ts":"2026-10-04T08:39:38Z"}
+{"action":"edit","agent":"simpici","detail":"review","task_id":24,"ts":"2026-10-04T08:44:26Z"}
+{"action":"move","agent":"simpici","detail":"done","task_id":24,"ts":"2026-10-04T08:45:12Z"}
+{"action":"edit","agent":"simpici","detail":"done","task_id":24,"ts":"2026-10-04T08:45:16Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":27,"ts":"2026-10-04T08:45:30Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":27,"ts":"2026-10-04T08:51:27Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":27,"ts":"2026-10-04T09:03:44Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":27,"ts":"2026-10-04T09:04:03Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":27,"ts":"2026-10-04T09:19:13Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":27,"ts":"2026-10-04T09:19:20Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":27,"ts":"2026-10-04T09:19:33Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":27,"ts":"2026-10-04T09:19:42Z"}
+{"action":"handoff","agent":"simpici","detail":"review","task_id":27,"ts":"2026-10-04T09:20:41Z"}
+{"action":"edit","agent":"simpici","detail":"review","task_id":27,"ts":"2026-10-04T09:22:55Z"}
+{"action":"move","agent":"simpici","detail":"done","task_id":27,"ts":"2026-10-04T09:23:32Z"}
+{"action":"edit","agent":"simpici","detail":"done","task_id":27,"ts":"2026-10-04T09:23:36Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":21,"ts":"2026-10-04T09:23:49Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":21,"ts":"2026-10-04T09:32:31Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":21,"ts":"2026-10-04T09:46:55Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":21,"ts":"2026-10-04T09:47:11Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":21,"ts":"2026-10-04T09:47:28Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":21,"ts":"2026-10-04T09:49:53Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":21,"ts":"2026-10-04T09:50:00Z"}
+{"action":"handoff","agent":"simpici","detail":"review","task_id":21,"ts":"2026-10-04T09:50:15Z"}
+{"action":"edit","agent":"simpici","detail":"review","task_id":21,"ts":"2026-10-04T09:54:40Z"}
+{"action":"edit","agent":"simpici","detail":"review","task_id":21,"ts":"2026-10-04T09:59:00Z"}
+{"action":"move","agent":"simpici","detail":"done","task_id":21,"ts":"2026-10-04T10:01:27Z"}
+{"action":"edit","agent":"simpici","detail":"done","task_id":21,"ts":"2026-10-04T10:01:31Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":13,"ts":"2026-10-04T10:01:45Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":13,"ts":"2026-10-04T10:10:47Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":13,"ts":"2026-10-04T10:18:52Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":13,"ts":"2026-10-04T10:37:09Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":13,"ts":"2026-10-04T10:37:26Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":13,"ts":"2026-10-04T10:49:15Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":13,"ts":"2026-10-04T10:49:33Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":13,"ts":"2026-10-04T10:50:49Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":13,"ts":"2026-10-04T11:01:18Z"}
+{"action":"edit","agent":"simpici","detail":"in-progress","task_id":13,"ts":"2026-10-04T11:12:10Z"}
+{"action":"handoff","agent":"simpici","detail":"review","task_id":13,"ts":"2026-10-04T11:27:12Z"}
+{"action":"move","agent":"simpici","detail":"done","task_id":13,"ts":"2026-10-05T00:16:21Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"done","task_id":13,"ts":"2026-10-05T00:16:47Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":28,"ts":"2026-10-05T00:16:51Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"done","task_id":13,"ts":"2026-10-05T00:19:26Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":4,"ts":"2026-10-05T02:32:58Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":28,"ts":"2026-10-05T02:33:02Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":4,"ts":"2026-10-05T22:01:35Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":4,"ts":"2026-10-05T22:01:39Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":29,"ts":"2026-10-07T23:11:39Z"}
