@@ -1,0 +1,3 @@
+claude: true
+prompt: |
+  Drain the SimpiCI karr board. Follow .claude/rules/simpici-rules.md, delegate behaviour-relevant code to the simpici-worker agent and release audits to simpici-release-manager. Never release.

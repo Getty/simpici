@@ -27,5 +27,21 @@ never use an atomic-save editor or replace hardlinks with copies.
 
 Behavior-relevant implementation, refactoring and tests belong with the
 `simpici-worker` agent. Commits, `Changes`, closing karr cards and the pre-release
-audit belong with `simpici-release-manager` — it is the only role that commits. Run `prove -lr t/` during development and `dzil test`
-before release.
+audit belong with `simpici-release-manager` — it is the only role that commits.
+
+## Delegation
+
+Delegate behavior-relevant code to the right agent instead of touching it yourself —
+principle and lane are in `.claude/rules/simpici-rules.md`.
+
+| Task | Agent |
+|---|---|
+| Implement / refactor / debug behavior-relevant code | `simpici-worker` (default) |
+| Commits, `Changes`, card → done, pre-release audit | `simpici-release-manager` |
+
+The agents carry their skills via `briefing.skills` (`.claude/agents/`); skill sources
+live in `.claude/skills/` — the shared ones are installed by skilletor, `simpici-core`
+is owned by this repo. Never edit an installed skill copy; change the source it comes
+from.
+
+Run `prove -lr t/` during development and `dzil test` before release.

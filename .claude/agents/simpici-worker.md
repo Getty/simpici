@@ -7,6 +7,7 @@ briefing:
     - simpici-core
     - getty-perl-core
     - getty-perl-moo
+    - getty-perl-pod
     - perl-io-async-future
     - kanban-issues-karr-ticket
 ---

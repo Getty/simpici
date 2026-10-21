@@ -9,6 +9,33 @@ SimpiCI is a small Git-aware job runner, not a general CI platform. The repo and
 distribution are `simpici` and `SimpiCI`; the daemon is `simpicid`; the
 optional trusted operator CLI is `simpici`.
 
+## Module map
+
+| Module | Owns |
+|---|---|
+| `SimpiCI` | the distribution facade; no logic of its own |
+| `SimpiCI::Event` | the validated, normalized repository event |
+| `SimpiCI::Store` | the private filesystem persistence |
+| `SimpiCI::Queue` | the durable, deduplicated dispatch queue with fenced leases |
+| `SimpiCI::Runner` | the run supervisor around an exact detached checkout |
+| `SimpiCI::Worker` | the outbound-only worker with its durable completion retry |
+| `SimpiCI::Dispatcher` | the restricted worker protocol and the dispatcher-owned secret policy |
+| `SimpiCI::Config` | reading a configuration file and the rules of its settings |
+| `SimpiCI::Source::GitPoll` | polling the configured Git refs |
+| `SimpiCI::Role::Secrets` | what a secret may be and how its value is redacted |
+| `SimpiCI::App::Run` | the implementation of the `simpici` operator command |
+| `SimpiCI::App::Eventd` | the implementation of the `simpicid` polling daemon |
+
+## Entry points
+
+| Program | Role |
+|---|---|
+| `bin/simpicid` | the polling daemon: polls the configured refs and starts the runs |
+| `bin/simpici` | the operator CLI: one event, the recorded tips, `--forget` a ref |
+| `bin/simpici-dispatch` | serves one restricted worker request over SSH standard input |
+| `bin/simpici-worker` | pulls exact-revision jobs over an outbound SSH connection |
+| `bin/simpici-executor` | the Bash executor every entry point ends in |
+
 ## Product boundary
 
 Native events normalize Git polling, webhook and manual input into one shape;
@@ -63,6 +90,11 @@ For executor variables, providers, mounts and current status semantics, read
   Mutable images, providers and dependencies are not reproducibility guarantees.
 - Keep internal payloads, credentials, queue data and workspaces outside the
   public tree. Validate decimal run IDs before building paths.
+- A clone URL is a URL of the scheme `https`, `http`, `ssh` or `file`, an SSH
+  address `[user@]host:path` or an absolute path. A relative path is refused:
+  git would read it from the directory it happens to run in, another one for
+  the poller than for the checkout. A URL whose user part may hold
+  credentials is shown to the jobs without it.
 
 ## Filesystem and reporting
 
@@ -84,6 +116,22 @@ metadata, read `docs/superpowers/specs/2026-09-21-branch-policy-design.md`.
 It distinguishes agreed defaults from proposed native metadata sources.
 Automatic protection checks, `.cicd/policy.json` and `branch_metadata` are not
 implemented. Do not document them as available or add a `policy_branch` switch.
+
+## The repository's own jobs
+
+`.cicd/` holds the jobs SimpiCI runs on itself: `docker+27+build.image.sh` and
+`docker+27+publish.image.sh` build the image and publish it, `perl+5.40+test.unit.sh`
+installs the dependencies and runs the suite. The image in the filename is the image
+the job runs in; the image it builds is the one the entry point names in
+`CICD_IMAGE_REPOSITORY`.
+
+## Test layout
+
+`t/` is numbered by the part under test: `00` load, `10` event, `20` and `21` store,
+`30` to `39` runner, `40` to `49` polling, `50` and `51` CLI and configuration, `60`
+to `69` dispatcher, `70` to `79` worker, `80` to `85` executor, `90` to `92`
+transport. The image grammar and the provider jobs are covered by
+`t/action-runner.sh`, a shell helper that only the CI job runs, not by `prove -lr t/`.
 
 ## Development direction
 
