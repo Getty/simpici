@@ -32,7 +32,8 @@ audit belong with `simpici-release-manager` — it is the only role that commits
 ## Delegation
 
 Delegate behavior-relevant code to the right agent instead of touching it yourself —
-principle and lane are in `.claude/rules/simpici-rules.md`.
+the principle is a shared house rule (skilletor bundle `getty-cpan-dist@getty`); lanes and
+hazards are in `.claude/rules/simpici-rules.md`.
 
 | Task | Agent |
 |---|---|

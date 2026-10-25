@@ -21,6 +21,9 @@
       "kanban-issues-karr-ticket@karr",
       "perl-io-async-future@getty",
       "perl-release-dist-ini@getty"
+    ],
+    "bundles": [
+      "getty-cpan-dist@getty"
     ]
   },
   "targets": [
