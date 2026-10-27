@@ -26,8 +26,9 @@ code goes back to the worker as a note on its card, not as your own fix. **Never
 
 1. **cpanfile** — every module `use`d in `lib/` and `bin/` is declared (runtime vs.
    `on test`); nothing declared is dead.
-2. **dist.ini** — `[@Author::GETTY]` intact; `[PruneFiles]` keeps `.claude/` out of the
-   tarball.
+2. **dist.ini** — `[@Author::GETTY]` intact. `.claude/`, `CLAUDE.md`, `.github/` and
+   `misc/agent-context/` ship on purpose (the bundle default); `dist.ini` excludes none
+   of them. Not a finding.
 3. **Build** — `dzil build` clean, no missing files, no warnings.
 4. **Tests** — `dzil test` green; `prove -lr t/` is the recursive development run.
 5. **Changes** — the `{{$NEXT}}` section covers the user-visible changes since the last
