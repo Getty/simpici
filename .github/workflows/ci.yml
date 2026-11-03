@@ -9,6 +9,10 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: perl:5.40-bookworm
+      # PID 1 reaps the processes whose parents ended, as the tests of the
+      # process groups expect; the default `tail -f /dev/null` leaves them
+      # as zombies.
+      options: --init
     steps:
       - uses: actions/checkout@v6
       - name: Fix safe.directory

@@ -53,6 +53,10 @@ local $ENV{CICD_WORKSPACE} = "$root";
 local $ENV{RUNNER_TEMP} = $root->child('tmp')->stringify;
 local $ENV{SIMPICI_PROVIDERS} = '';
 local $ENV{SIMPICI_CONCURRENCY} = 2;
+# A fixed endpoint keeps the test independent of the environment: without a
+# unix DOCKER_HOST and without a socket at the default place, the executor
+# asks docker for its context, one call more than the test expects.
+local $ENV{DOCKER_HOST} = 'unix://'.$root->child('docker.sock');
 local $ENV{TEST_STATE} = "$state";
 delete local $ENV{SIMPICI_INSTANCE};
 
