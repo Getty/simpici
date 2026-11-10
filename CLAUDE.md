@@ -21,9 +21,8 @@ Keep project instructions in `CLAUDE.md` and agent/skill definitions under
 `.claude/` as the single maintained configuration.
 
 Project architecture and invariants live in skill `simpici-core`. Shared Getty
-Perl and Git skills under `.claude/skills/` are hardlinked by `manage-skills`.
-Before editing a linked skill, load `manage-skills` and preserve its inode;
-never use an atomic-save editor or replace hardlinks with copies.
+Perl and Git skills under `.claude/skills/` are installed by skilletor from
+`.claude/skilletor.json`; they change in their source repos.
 
 Behavior-relevant implementation, refactoring and tests belong with the
 `simpici-worker` agent. Commits, `Changes`, closing karr cards and the pre-release
