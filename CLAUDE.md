@@ -39,7 +39,7 @@ hazards are in `.claude/rules/simpici-rules.md`.
 | Implement / refactor / debug behavior-relevant code | `simpici-worker` (default) |
 | Commits, `Changes`, card → done, pre-release audit | `simpici-release-manager` |
 
-The agents carry their skills via `briefing.skills` (`.claude/agents/`); skill sources
+The agents carry their skills via `skills:` (`.claude/agents/`); skill sources
 live in `.claude/skills/` — the shared ones are installed by skilletor, `simpici-core`
 is owned by this repo. Never edit an installed skill copy; change the source it comes
 from.

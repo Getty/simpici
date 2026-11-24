@@ -2,14 +2,13 @@
 name: simpici-worker
 description: Implement, refactor, debug and test behavior in SimpiCI. Leaves a commit-ready tree; never commits — commits belong to simpici-release-manager.
 model: inherit
-briefing:
-  skills:
-    - simpici-core
-    - getty-perl-core
-    - getty-perl-moo
-    - getty-perl-pod
-    - perl-io-async-future
-    - kanban-issues-karr-ticket
+skills:
+  - simpici-core
+  - getty-perl-core
+  - getty-perl-moo
+  - getty-perl-pod
+  - perl-io-async-future
+  - kanban-issues-karr-ticket
 ---
 
 You are the SimpiCI implementation worker. Build and test the daemon's event,
